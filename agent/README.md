@@ -33,6 +33,7 @@ FM은 적격성을 결정하지 않습니다. 동일 입력 → 동일 판정을
 | `loop.py` | tool-use 루프로 근거 보강 |
 | `verifier.py` | 근거 ↔ 기준 NLI 검증 |
 | `narration.py` | 판정 설명 생성, 확인 질문 작성 |
+| `intake.py` | 자유 문장 → 측정값·약물·이상반응·상태 이벤트 정규화 |
 
 ## 에이전트 목록
 
@@ -42,8 +43,67 @@ FM은 적격성을 결정하지 않습니다. 동일 입력 → 동일 판정을
 | Evidence Verifier | 근거 ↔ 기준 NLI 검증 | `verifier.py` |
 | Next Best Evidence | 정보 가치순 확인 질문 생성 | `narration.py` |
 | Explanation | 판정 근거 설명 생성 | `narration.py` |
-| Intake | 자유 문장 → 이벤트 정규화 | 미구현 (계획) |
+| Intake | 자유 문장 → 이벤트 정규화 | `intake.py` |
 | Medi25 Crawler | 모집공고 수집 (별도 계층) | `crawler/medi25-crawler-agent.md` |
+
+## Intake 에이전트
+
+참여자나 의료진이 쓴 문장은 그대로는 판정에 쓸 수 없습니다. Intake 가 문장을
+네 종류의 이벤트로 바꿔 놓으면 이후 계층이 관찰값처럼 다룰 수 있습니다.
+
+| 이벤트 | 예시 입력 | 결과 |
+|--------|-----------|------|
+| `MEASUREMENT` | `3개월 전 HbA1c 7.8%` | `hba1c=7.8 %` / `2024-03-15` |
+| `MEASUREMENT` | `혈압 150/95 mmHg` | `systolic_bp=150`, `diastolic_bp=95` 두 건 |
+| `MEDICATION` | `지난달부터 metformin 을 중단했습니다` | `metformin=STOPPED` / `2024-05-15` |
+| `ADVERSE_EVENT` | `저혈당은 없었습니다` | `hypoglycemia=False` |
+| `CONDITION` | `임신 중입니다` | `active_pregnancy=True` |
+
+### 역할 분리
+
+여기서도 FM 은 판정하지 않습니다. 나아가 **계산도 하지 않습니다**.
+
+| 담당 | 주체 |
+|------|------|
+| 문장에서 조각 추출 (무엇이 적혀 있는가) | FM |
+| 날짜 계산 (`3개월 전` → ISO 날짜) | 규칙 |
+| 필드 정교화, 단위 확인, 범위 검사 | 규칙 |
+| 부정 표현 판단 | 규칙 (문장 단위) |
+
+FM 이 날짜를 계산하면 같은 문장에 다른 날짜가 나올 수 있습니다. 그래서 프롬프트는
+원문 표현(`when`)을 그대로 옮기라고 지시하고, 변환은 `parse_when()` 이 전담합니다.
+
+### 통과 조건
+
+- **그라운딩**: `span` 이 원문에 문자 그대로 없으면 이벤트를 버립니다. 버린 항목은
+  `dropped` 에 이유와 함께 남습니다. 모델이 지어낸 값이 조용히 통과하지 않습니다.
+- **중복 제거**: 모델 용어를 에이전트 어휘로 정규화한 뒤(`당화혈색소` → `hba1c`)
+  규칙 결과와 겹치면 규칙 쪽을 남깁니다.
+- **확신도 상한**: 모델 추출은 규칙 확인을 거치지 않았으므로 0.8 을 넘지 않습니다.
+- **검토 승격**: 단위 불일치, 범위 이탈, 해석 못한 시점, 기준일보다 뒤의 날짜는
+  버리지 않고 `needs_review=True` 로 올립니다.
+
+측정값은 문장에 숫자가 적혀 있으면 사실로 봅니다. 같은 문장에 `없음` 이 있어도
+값을 뒤집지 않습니다. 부정은 이상반응·상태에만 적용됩니다.
+
+### 모델 없이도 동작
+
+규칙 추출기(`RuleIntakeExtractor`)가 항상 먼저 돌기 때문에 모델이 없거나 실패해도
+결과가 나옵니다. 그래서 `intake_agent` 는 Bedrock 이 꺼져 있어도 `enabled=True` 입니다.
+모델 호출이 실패하면 `error` 에 이유가 남고 규칙 결과는 그대로 유지됩니다.
+
+카탈로그에 없는 용어(체중, 크레아티닌, 수축기 혈압)는 `field=None` 로 통과합니다.
+기록은 남고 판정에는 쓰이지 않습니다.
+
+### 호출 지점
+
+| 경로 | 용도 |
+|------|------|
+| `POST /api/v1/intake/normalize` | 문장 하나를 직접 정규화 |
+| `POST /api/v1/patients/{id}/answers` | 확인 질문 답변을 저장하며 함께 정규화 |
+
+`/answers` 는 원문을 그대로 보관하고 해석을 `intake` 로 덧붙입니다. 상대 시점의
+기준일은 실행의 인덱스 방문일입니다.
 
 ## 계약 (contracts.py)
 
@@ -57,6 +117,7 @@ FM은 적격성을 결정하지 않습니다. 동일 입력 → 동일 판정을
 | `EvidenceVerifier` | `app.reasoning.verifier.LocalEvidenceVerifier` |
 | `ExplanationWriter` | `app.actions.explanation.ExplanationAgent` |
 | `NextBestEvidenceWriter` | `app.actions.next_best.NextBestEvidenceAgent` |
+| `FieldResolver` | `app.domain.intake_vocabulary.CatalogFieldResolver` |
 | `AgentSettings` | `app.config.ModelSettings` |
 
 데이터 형태(`EvidenceBundle`, `CriterionResult`, `ExecutionPlan` 등)도 Protocol로
@@ -85,8 +146,15 @@ agents = AgentManager(
     local_explainer=ExplanationAgent(...),
     local_next_best=NextBestEvidenceAgent(...),
     narration_guardrail=LocalGuardrail(attach_disclaimer=False),
+    field_resolver=CatalogFieldResolver(),
     model_factory=build_model_client,
 ).build()
+
+agents.verifier    # 근거 검증
+agents.explainer   # 설명 생성
+agents.next_best   # 확인 질문
+agents.gatherer    # 근거 수집 루프 (모델 없으면 None)
+agents.intake      # 자유 문장 정규화 (모델 없어도 동작)
 ```
 
 실제 호출부는 `backend/api/app/container.py` 입니다.
@@ -101,7 +169,8 @@ agents = AgentManager(
 
 ## 다음 작업
 
-- [ ] Intake 에이전트 구현 (자유 문장 → 약물·이상반응·날짜 이벤트)
+- [x] Intake 에이전트 구현 (자유 문장 → 측정값·약물·이상반응·상태 이벤트)
+- [ ] Intake 이벤트를 관찰값으로 승격해 미해소 기준 재판정에 반영
 - [ ] 스텁 모델 → Bedrock Converse API 실제 호출 검증
 - [ ] 프롬프트 버전 규칙 정의
 - [ ] 가드레일 위반 케이스 테스트 시나리오

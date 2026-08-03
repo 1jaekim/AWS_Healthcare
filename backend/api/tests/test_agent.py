@@ -803,8 +803,10 @@ def test_architecture_endpoint_reports_agent_status() -> None:
         assert "screening_orchestrator" in managed
         assert "rag_evidence_retrieval" in managed
         assert "intake_agent" in managed
-        assert managed["intake_agent"]["enabled"] is False
-        assert managed["intake_agent"]["mode"] == "planned"
+        # Intake 는 규칙 추출기만으로 완결되므로 모델이 꺼져 있어도 동작한다.
+        assert managed["intake_agent"]["enabled"] is True
+        assert managed["intake_agent"]["mode"] == "deterministic"
+        assert managed["intake_agent"]["model_backed"] is False
 
 
 def test_stub_model_is_deterministic() -> None:

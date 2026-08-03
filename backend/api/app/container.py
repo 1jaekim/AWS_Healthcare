@@ -16,9 +16,11 @@ from .actions.cohort import CohortSelector
 from .actions.explanation import ExplanationAgent
 from .actions.next_best import NextBestEvidenceAgent
 from .actions.packet import EvidencePacketBuilder
+from agent.intake import IntakeAgent
 from agent.manager import AgentManager, AgentStatus
 from agent.model import BedrockModelClient, ModelClient, ModelError
 from .config import ModelSettings, settings as default_settings
+from .domain.intake_vocabulary import CatalogFieldResolver
 from .orchestration.gateway import ToolGateway, default_policy
 from .orchestration.router import CriterionRouter
 from .orchestration.runtime import ScreeningOrchestrator
@@ -50,6 +52,7 @@ class Container:
     timeline_tool: TimelineGraphTool
     orchestrator: ScreeningOrchestrator
     cohort_selector: CohortSelector
+    intake: IntakeAgent
     agent: AgentStatus
 
 
@@ -117,6 +120,7 @@ def build_container(
             LocalGuardrail(attach_disclaimer=False)
         ),
         narration_guardrail=LocalGuardrail(attach_disclaimer=False),
+        field_resolver=CatalogFieldResolver(),
         model_client=model_client,
         model_factory=_build_model_client,
     ).build()
@@ -150,5 +154,6 @@ def build_container(
         timeline_tool=timeline_tool,
         orchestrator=orchestrator,
         cohort_selector=CohortSelector(),
+        intake=agents.intake,
         agent=agents.status,
     )

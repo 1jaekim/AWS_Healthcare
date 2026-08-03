@@ -21,6 +21,8 @@ from .schemas import (
     EvidencePacketOut,
     EvidenceRequestOut,
     HealthResponse,
+    IntakeRequest,
+    IntakeResultOut,
     PatientDetail,
     PatientListResponse,
     ReviewDecisionRequest,
@@ -403,6 +405,14 @@ def submit_answer(person_id: int, payload: AnswerRequest, container: Ctx) -> dic
         submitted_by=payload.submitted_by,
         request_id=payload.request_id,
     )
+    # 자유 문장 답변을 이벤트로 정규화한다. 원문은 그대로 보관하고 해석은 덧붙인다.
+    # 기준일은 실행의 인덱스 방문일이다. '3개월 전' 같은 표현이 판정 시점을
+    # 기준으로 계산되어야 하기 때문이다.
+    intake = container.intake.normalize(
+        payload.value,
+        reference_date=run.index_date,
+        run_id=payload.run_id,
+    )
     container.audit.record(
         "ANSWER_SUBMITTED",
         actor=payload.submitted_by,
@@ -411,8 +421,27 @@ def submit_answer(person_id: int, payload: AnswerRequest, container: Ctx) -> dic
         trial_id=run.trial_id,
         criterion_id=payload.criterion_id,
         answer_id=answer.answer_id,
+        intake_event_count=len(intake.events),
+        intake_needs_review=intake.needs_review,
     )
-    return answer.to_dict()
+    return {**answer.to_dict(), "intake": intake.to_dict()}
+
+
+@app.post(
+    "/api/v1/intake/normalize",
+    response_model=IntakeResultOut,
+    tags=["intake"],
+)
+def normalize_intake(payload: IntakeRequest, container: Ctx) -> dict:
+    """자유 문장을 측정값·약물·이상반응·상태 이벤트로 정규화한다.
+
+    판정하지 않는다. 문장에 적힌 사실만 구조화해 돌려준다. 근거 구간이 원문에
+    없는 항목은 통과시키지 않고 `dropped` 에 이유와 함께 남긴다.
+    """
+    result = container.intake.normalize(
+        payload.text, reference_date=payload.reference_date
+    )
+    return result.to_dict()
 
 
 # ---------------------------------------------------------------------------

@@ -127,6 +127,8 @@ EventBridge (trials/ 업로드) → Protocol Parser → SNS 검토 알림
 | `GET` | `/api/v1/screening/{run_id}/evidence` | 기준별 근거 패킷 |
 | `POST` | `/api/v1/cohort/run` | 배치 코호트 분석 |
 | `GET` | `/api/v1/patients/{person_id}/questions` | 확인 질문 (정보 가치 순) |
+| `POST` | `/api/v1/patients/{person_id}/answers` | 답변 제출 (자유 문장 정규화 포함) |
+| `POST` | `/api/v1/intake/normalize` | 자유 문장 → 구조화 이벤트 정규화 |
 | `GET` | `/api/v1/review-queue` | 검토 대기 목록 |
 
 ### 판정 상태

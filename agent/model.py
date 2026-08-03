@@ -278,6 +278,7 @@ class StubModelClient:
             "explain": self._explain,
             "question": self._question,
             "plan": self._plan,
+            "intake": self._intake,
         }.get(task)
         if handler is None:
             return ModelResponse(text="{}")
@@ -342,6 +343,14 @@ class StubModelClient:
                 ensure_ascii=False,
             )
         )
+
+    def _intake(self, payload: dict[str, Any]) -> ModelResponse:
+        """추출을 시도하지 않고 빈 목록을 낸다.
+
+        스텁이 문장을 해석하면 규칙 추출기와 결과가 갈려 재현성이 흔들린다.
+        Intake 는 규칙 추출기만으로도 완결되므로, 스텁은 아무것도 덧붙이지 않는다.
+        """
+        return ModelResponse(text=json.dumps({"events": []}, ensure_ascii=False))
 
     def _plan(self, payload: dict[str, Any]) -> ModelResponse:
         """자유서술 확인이 필요한 기준이 남아 있으면 검색을 한 번 요청한다."""

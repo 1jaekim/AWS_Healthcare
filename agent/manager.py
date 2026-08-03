@@ -14,11 +14,13 @@ from .contracts import (
     AgentSettings,
     EvidenceVerifier,
     ExplanationWriter,
+    FieldResolver,
     Guardrail,
     NextBestEvidenceWriter,
     ToolGateway,
     Tracer,
 )
+from .intake import IntakeAgent
 from .loop import EvidenceGatheringAgent
 from .model import ModelClient, StubModelClient
 from .narration import ModelExplanationAgent, ModelNextBestEvidenceAgent
@@ -64,6 +66,7 @@ class ManagedAgents:
     explainer: Any
     next_best: Any
     gatherer: EvidenceGatheringAgent | None
+    intake: IntakeAgent
     status: AgentStatus
 
 
@@ -85,6 +88,7 @@ class AgentManager:
         local_explainer: ExplanationWriter,
         local_next_best: NextBestEvidenceWriter,
         narration_guardrail: Guardrail | None = None,
+        field_resolver: FieldResolver | None = None,
         model_client: ModelClient | None = None,
         model_factory: ModelFactory | None = None,
     ) -> None:
@@ -98,6 +102,7 @@ class AgentManager:
         # 질문 문장에는 면책 문구를 붙이지 않는다. 호출자가 그 설정의 Guardrail 을
         # 따로 주면 그것을 쓰고, 없으면 기본 Guardrail 을 쓴다.
         self._narration_guardrail = narration_guardrail or guardrail
+        self._field_resolver = field_resolver
         self._model_client = model_client
         self._model_factory = model_factory
 
@@ -120,6 +125,8 @@ class AgentManager:
                 explainer=local_explainer,
                 next_best=local_next_best,
                 gatherer=None,
+                # Intake 는 규칙 추출기만으로 완결되므로 모델이 없어도 켜 둔다.
+                intake=self._build_intake(model=None),
                 status=status,
             )
 
@@ -156,7 +163,21 @@ class AgentManager:
             explainer=explainer,
             next_best=next_best,
             gatherer=gatherer,
+            intake=self._build_intake(model=client),
             status=status,
+        )
+
+    def _build_intake(self, *, model: ModelClient | None) -> IntakeAgent:
+        """Intake 를 조립한다.
+
+        용어 라벨에는 면책 문구를 붙이지 않아야 하므로 narration 쪽 Guardrail 을
+        함께 쓴다. Intake 는 문장을 생성하지 않고 검사 목적으로만 호출한다.
+        """
+        return IntakeAgent(
+            guardrail=self._narration_guardrail,
+            trace=self._trace,
+            model=model,
+            resolver=self._field_resolver,
         )
 
     def _resolve_model_client(self) -> tuple[ModelClient | None, str | None]:
@@ -226,11 +247,12 @@ class AgentManager:
             ),
             ManagedAgentInfo(
                 name="intake_agent",
-                role="자유 문장 입력을 약물·이상반응·날짜 이벤트로 정규화",
-                enabled=False,
-                mode="planned",
-                model_backed=False,
-                source=None,
+                role="자유 문장 입력을 측정값·약물·이상반응·상태 이벤트로 정규화",
+                enabled=True,
+                # 규칙 추출기가 항상 동작하므로 모델이 없어도 결정론적으로 켜진다.
+                mode=mode if enabled else "deterministic",
+                model_backed=model_backed,
+                source="agent/intake.py",
             ),
             ManagedAgentInfo(
                 name="evidence_verifier",

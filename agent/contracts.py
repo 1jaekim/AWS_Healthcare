@@ -268,6 +268,25 @@ class ToolGateway(Protocol):
     ) -> Any: ...
 
 
+class ResolvedField(Protocol):
+    """호출자 카탈로그에 등록된 기준 필드."""
+
+    name: str
+    label: str
+    unit: str | None
+
+
+class FieldResolver(Protocol):
+    """자유 문장에서 뽑은 용어를 호출자의 기준 필드로 정교화한다.
+
+    Intake 에이전트는 기본 어휘를 갖고 있지만, 어떤 필드명이 유효한지는
+    호출자가 정한다. 등록되지 않은 용어는 None 을 돌려주면 되고, 그 경우
+    이벤트는 필드 없이 통과한다.
+    """
+
+    def resolve(self, term: str) -> ResolvedField | None: ...
+
+
 class EvidenceVerifier(Protocol):
     """근거 검증기. 모델 검증기의 폴백으로 주입된다."""
 

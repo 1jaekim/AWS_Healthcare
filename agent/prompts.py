@@ -96,3 +96,44 @@ QUESTION_WRITER = f"""
 
 {_COMMON_GUARD}
 """.strip()
+
+INTAKE_NORMALIZER = f"""
+당신은 참여자나 의료진이 쓴 자유 문장에서 사실 조각을 뽑아내는 추출자다.
+값을 해석하거나 판정하지 않는다. 문장에 적혀 있는 것만 그대로 꺼낸다.
+
+뽑아야 하는 것은 네 가지다.
+- MEASUREMENT: 검사·측정값. 예: HbA1c 7.2%, 공복혈당 130 mg/dL, 혈압 150/95 mmHg
+- MEDICATION: 약물 또는 치료 상태. 예: metformin 시작, 인슐린 중단, 생활습관 관리
+- ADVERSE_EVENT: 이상반응·증상. 예: 저혈당, 오심, 어지러움
+- CONDITION: 상태. 예: 임신 중, 수유 중, 혈압 조절 불량
+
+반드시 지킬 규칙:
+- `span` 에는 근거가 된 원문 구간을 **글자 그대로** 옮긴다. 요약하거나 다듬지 않는다.
+  원문에 없는 문자열을 쓰면 그 항목은 버려진다.
+- 날짜는 원문 표현을 그대로 `when` 에 넣는다. 직접 계산하지 않는다.
+  예: "3개월 전", "지난달", "2024년 5월", "어제"
+- 문장이 부정이면 `negated` 를 true 로 둔다. 예: "저혈당은 없었다" → negated true
+- 숫자는 원문에 적힌 숫자만 쓴다. 단위도 원문 표기를 따른다.
+- 확실하지 않으면 항목을 만들지 말고 빼둔다. 추측해서 채우지 않는다.
+
+다음 JSON 형식으로만 답한다. 설명 문장을 앞뒤에 붙이지 않는다.
+
+{{
+  "events": [
+    {{
+      "type": "MEASUREMENT" | "MEDICATION" | "ADVERSE_EVENT" | "CONDITION",
+      "term": "무엇에 대한 것인지 (예: HbA1c, metformin, 저혈당, 임신)",
+      "value": 숫자 또는 문자열 또는 null,
+      "unit": "원문 단위 표기 또는 null",
+      "when": "원문에 적힌 시점 표현 또는 null",
+      "negated": true | false,
+      "span": "근거가 된 원문 구간 그대로",
+      "confidence": 0.0 에서 1.0 사이 숫자
+    }}
+  ]
+}}
+
+뽑을 것이 없으면 {{"events": []}} 를 반환한다.
+
+{_COMMON_GUARD}
+""".strip()

@@ -319,6 +319,50 @@ class AnswerRequest(BaseModel):
     request_id: str | None = None
 
 
+class IntakeEventOut(BaseModel):
+    event_type: Literal["MEASUREMENT", "MEDICATION", "ADVERSE_EVENT", "CONDITION"]
+    term: str
+    label: str
+    value: float | str | bool | None = None
+    unit: str | None = None
+    occurred_at: str | None = None
+    date_precision: Literal["DAY", "MONTH", "APPROX"] | None = None
+    field: str | None = None
+    source_span: str
+    confidence: float
+    needs_review: bool
+    origin: Literal["rule", "model"]
+    notes: list[str] = Field(default_factory=list)
+
+
+class IntakeDroppedOut(BaseModel):
+    term: str
+    span: str
+    origin: str
+    reason: str
+
+
+class IntakeResultOut(BaseModel):
+    text: str
+    reference_date: str
+    mode: str
+    event_count: int
+    needs_review: bool
+    events: list[IntakeEventOut] = Field(default_factory=list)
+    dropped: list[IntakeDroppedOut] = Field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
+    error: str | None = None
+
+
+class IntakeRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    reference_date: str | None = Field(
+        default=None,
+        description="상대 시점 표현의 기준일 (ISO). 없으면 오늘로 본다.",
+    )
+
+
 class AnswerResponse(BaseModel):
     answer_id: str
     run_id: str
@@ -328,6 +372,7 @@ class AnswerResponse(BaseModel):
     value: str
     submitted_by: str
     submitted_at: str
+    intake: IntakeResultOut | None = None
 
 
 class ReviewTicketOut(BaseModel):
