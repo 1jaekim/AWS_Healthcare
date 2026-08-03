@@ -8,24 +8,10 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-
-class CriterionStatus(StrEnum):
-    """기준 한 건에 대한 판정 상태."""
-
-    EVIDENCE_FOUND = "EVIDENCE_FOUND"
-    """근거가 확인되어 조건을 충족한다."""
-
-    CONTRADICTED = "CONTRADICTED"
-    """근거가 확인되었으나 조건과 충돌한다."""
-
-    UNKNOWN = "UNKNOWN"
-    """판정에 필요한 관찰값이 없다."""
-
-    CONFLICTING = "CONFLICTING"
-    """기록 간 값이 서로 어긋난다."""
-
-    REVIEW_REQUIRED = "REVIEW_REQUIRED"
-    """자동 판정 신뢰도가 낮아 사람 검토가 필요하다."""
+# CriterionStatus 는 에이전트 계층과 공유하는 어휘라 agent/contracts.py 가 정의한다.
+# 에이전트가 만든 상태값과 여기서 비교하는 값이 같은 enum 객체여야 하기 때문이다.
+# backend 코드는 계속 이 모듈에서 가져다 쓴다.
+from agent.contracts import CriterionStatus as CriterionStatus
 
 
 class EligibilityStatus(StrEnum):
@@ -65,3 +51,11 @@ OPEN_STATES = frozenset(
     {CriterionStatus.UNKNOWN, CriterionStatus.CONFLICTING}
 )
 """추가 근거 수집으로 해소 가능한 상태."""
+
+__all__ = [
+    "CriterionKind",
+    "CriterionStatus",
+    "EligibilityStatus",
+    "OPEN_STATES",
+    "TERMINAL_FAILURE_STATES",
+]

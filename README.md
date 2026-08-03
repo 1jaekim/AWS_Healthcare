@@ -15,7 +15,7 @@
 ├── backend/     데이터 파이프라인 + 스크리닝 오케스트레이터 API
 ├── crawler/     Medi25 임상시험 모집공고 크롤러
 ├── rag/         검색·근거 확보(Retrieval) 계층
-└── agent/       에이전트 정의·프롬프트·도구 스펙
+└── agent/       에이전트 계층 (모델 클라이언트, tool-use 루프, FM 검증·설명)
 ```
 
 | 폴더 | 내용 | 문서 |
@@ -23,7 +23,11 @@
 | `backend/` | AWS CDK 인프라, 파이프라인 Lambda, Step Functions, FastAPI 스크리닝 API | [backend/README.md](backend/README.md) · [backend/api/README.md](backend/api/README.md) |
 | `crawler/` | Medi25 검색 → 모집공고 선별 → 메타데이터 표준화(JSON) | [crawler/README.md](crawler/README.md) |
 | `rag/` | 청킹·색인·질의 템플릿·검색 품질 평가 | [rag/README.md](rag/README.md) |
-| `agent/` | 에이전트 역할 명세, 프롬프트, tool spec, 가드레일 정책 | [agent/README.md](agent/README.md) |
+| `agent/` | 모델 클라이언트, tool spec, tool-use 루프, FM 검증·설명 생성 | [agent/README.md](agent/README.md) |
+
+`agent/` 는 `backend` 를 import 하지 않습니다. 필요한 동작은 `agent/contracts.py` 의
+Protocol 로 선언하고 `backend/api/app/container.py` 가 구현을 주입합니다.
+의존성은 `backend → agent` 한 방향입니다.
 
 ## 데이터 흐름
 
@@ -51,21 +55,25 @@ FM은 적격성을 결정하지 않습니다. 판정 확정은 결정론적 규�
 
 ### 스크리닝 API 로컬 실행
 
-```bash
+저장소 루트에서 실행합니다.
+
+```powershell
 python -m venv backend/.venv
-backend/.venv/Scripts/activate      # Windows (macOS/Linux: source backend/.venv/bin/activate)
-pip install -r backend/api/requirements.txt
-uvicorn app.main:app --app-dir backend/api --reload --port 8000
+backend/.venv/Scripts/python -m pip install -r backend/api/requirements.txt
+backend/.venv/Scripts/python -m uvicorn app.main:app --app-dir backend/api --reload --port 8000
 ```
 
 - Swagger: http://127.0.0.1:8000/docs
 - 헬스체크: http://127.0.0.1:8000/health
 
+`-m` 이 저장소 루트를 import 경로에 넣어 `agent` 패키지를 찾고,
+`--app-dir` 이 `backend/api` 를 넣어 `app` 패키지를 찾습니다.
+
 ### 테스트
 
-```bash
+```powershell
 cd backend/api
-pytest tests -q
+../.venv/Scripts/python -m pytest tests -q
 ```
 
 ### 인프라 배포 (CDK)
@@ -95,6 +103,6 @@ cdk deploy --all
 | 관측성 (CloudWatch, SNS) | Lee-namju | 완료 |
 | Medi25 크롤러 | 1jaekim | 문서 완료, 구현 예정 |
 | 스크리닝 오케스트레이터 API | GGeunGGeun | 완료 |
+| 에이전트 계층 (`agent/`) | GGeunGGeun | 완료, Bedrock 실호출 미검증 |
 | RAG 검색 계층 | 미정 | 진행 예정 |
-| 에이전트 명세·프롬프트 | 미정 | 진행 예정 |
 | 로컬 어댑터 → AWS 연결 | 공동 | 진행 예정 |

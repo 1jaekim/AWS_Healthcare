@@ -7,15 +7,20 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
-from app.actions.explanation import Explanation, ExplanationAgent
-from app.actions.next_best import EvidenceRequest, NextBestEvidenceAgent
-from app.domain.models import CriterionResult
-from app.domain.states import CriterionStatus
-from app.reasoning.aggregator import AggregateOutcome
-from app.safety.guardrails import LocalGuardrail
-from app.safety.observability import TraceCollector
+from .contracts import (
+    AggregateOutcome,
+    CriterionResult,
+    CriterionStatus,
+    EvidenceRequest,
+    Explanation,
+    ExplanationWriter,
+    Guardrail,
+    NextBestEvidenceWriter,
+    Tracer,
+)
 from .model import Conversation, ModelClient, ModelError
 from .prompts import EXPLANATION_ADMIN, EXPLANATION_PATIENT, QUESTION_WRITER
 
@@ -29,9 +34,9 @@ class ModelExplanationAgent:
         self,
         *,
         model: ModelClient,
-        guardrail: LocalGuardrail,
-        fallback: ExplanationAgent,
-        trace: TraceCollector,
+        guardrail: Guardrail,
+        fallback: ExplanationWriter,
+        trace: Tracer,
     ) -> None:
         self._model = model
         self._guardrail = guardrail
@@ -46,15 +51,19 @@ class ModelExplanationAgent:
         audience: str,
         run_id: str | None = None,
     ) -> Explanation:
+        # 템플릿 결과를 먼저 만든다. 폴백으로 쓰이고, 모델이 성공해도 이 객체를
+        # 복사해 반환한다. 구체 Explanation 타입을 알지 않아도 되는 이유다.
+        template = self._fallback.explain(
+            outcome=outcome, results=results, audience=audience
+        )
+
         source_ids = [sid for item in results for sid in item.source_ids]
         # 출처가 없으면 모델을 부르지 않는다. Contextual Grounding 선결 조건.
         grounding = self._guardrail.check_grounding(
             "설명 생성 요청", source_ids=source_ids
         )
         if grounding.blocked:
-            return self._fallback.explain(
-                outcome=outcome, results=results, audience=audience
-            )
+            return template
 
         payload = self._payload(outcome, results, audience)
         conversation = Conversation()
@@ -80,16 +89,12 @@ class ModelExplanationAgent:
                 attributes["input_tokens"] = response.input_tokens
                 attributes["output_tokens"] = response.output_tokens
         except ModelError:
-            return self._fallback.explain(
-                outcome=outcome, results=results, audience=audience
-            )
+            return template
 
         parsed = response.json_payload()
         summary = str((parsed or {}).get("summary", "")).strip()
         if not summary:
-            return self._fallback.explain(
-                outcome=outcome, results=results, audience=audience
-            )
+            return template
 
         highlights = [
             str(item).strip()
@@ -98,21 +103,24 @@ class ModelExplanationAgent:
         ]
         if not highlights:
             # 모델이 항목별 설명을 비우면 템플릿 항목을 쓴다.
-            highlights = self._fallback.explain(
-                outcome=outcome, results=results, audience=audience
-            ).highlights
+            highlights = list(template.highlights)
 
-        return self._review(summary, highlights, audience)
+        return self._review(template, summary, highlights, audience)
 
     def _review(
-        self, summary: str, highlights: list[str], audience: str
+        self,
+        template: Explanation,
+        summary: str,
+        highlights: list[str],
+        audience: str,
     ) -> Explanation:
         """생성 문장을 Guardrails 로 검사한다."""
         verdict = self._guardrail.review(summary, audience=audience)
         if verdict.blocked:
-            return Explanation(
-                audience=audience,
+            return replace(
+                template,
                 summary=verdict.text,
+                highlights=[],
                 blocked=True,
                 guardrail_findings=[
                     {"rule_id": item.rule_id, "severity": item.severity}
@@ -135,8 +143,8 @@ class ModelExplanationAgent:
                 for item in checked.findings
             )
 
-        return Explanation(
-            audience=audience,
+        return replace(
+            template,
             summary=verdict.text,
             highlights=reviewed,
             blocked=False,
@@ -201,9 +209,9 @@ class ModelNextBestEvidenceAgent:
         self,
         *,
         model: ModelClient,
-        guardrail: LocalGuardrail,
-        fallback: NextBestEvidenceAgent,
-        trace: TraceCollector,
+        guardrail: Guardrail,
+        fallback: NextBestEvidenceWriter,
+        trace: Tracer,
     ) -> None:
         self._model = model
         self._guardrail = guardrail
@@ -224,21 +232,11 @@ class ModelNextBestEvidenceAgent:
         by_id = {item.criterion_id: item for item in results}
         rewritten: list[EvidenceRequest] = []
         for request in base:
-            question = self._write_question(run_id, request, by_id.get(request.criterion_id))
-            rewritten.append(
-                EvidenceRequest(
-                    request_id=request.request_id,
-                    criterion_id=request.criterion_id,
-                    field_name=request.field_name,
-                    label=request.label,
-                    reason=request.reason,
-                    question=question,
-                    information_value=request.information_value,
-                    effort=request.effort,
-                    priority=request.priority,
-                    target=request.target,
-                )
+            question = self._write_question(
+                run_id, request, by_id.get(request.criterion_id)
             )
+            # 순위·정보 가치는 폴백이 정한 값을 그대로 두고 문장만 교체한다.
+            rewritten.append(replace(request, question=question))
         return rewritten
 
     def _write_question(

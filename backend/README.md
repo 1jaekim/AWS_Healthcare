@@ -61,7 +61,6 @@ backend/
 │   │   ├── main.py                   # API 진입점 (FastAPI)
 │   │   ├── container.py              # 의존성 조립 (어댑터 교체 지점)
 │   │   ├── orchestration/            # Runtime, Router, Gateway
-│   │   ├── agent/                    # Bedrock FM 에이전트 (tool-use 루프)
 │   │   ├── tools/                    # Criteria, Evidence, Timeline, Rule
 │   │   ├── reasoning/                # 근거 검증, 취합, 상태 확정
 │   │   ├── actions/                  # Cohort, Packet, NextBest, Explanation
@@ -70,12 +69,17 @@ backend/
 │   │   ├── safety/                   # Guardrails, Observability
 │   │   ├── repository.py             # 데이터 어댑터 (CSV → AWS 전환 예정)
 │   │   └── schemas.py                # Pydantic 스키마
+│   ├── conftest.py                   # 테스트 import 경로 설정
 │   ├── tests/                        # API 테스트
 │   └── requirements.txt              # API 의존성
 │
 ├── tests/
 └── scripts/
 ```
+
+에이전트 계층은 저장소 루트의 `agent/` 에 있습니다. `backend` 를 import 하지 않고
+`agent/contracts.py` 의 Protocol 로만 외부와 연결되며, `api/app/container.py` 가
+구현을 주입합니다. 자세한 내용은 [../agent/README.md](../agent/README.md) 참고.
 
 ## 데이터 파이프라인 (infra/ + lambdas/)
 

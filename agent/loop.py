@@ -13,10 +13,15 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.domain.models import NarrativeSnippet, Observation
-from app.orchestration.router import ExecutionPlan
-from app.safety.observability import TraceCollector
-from app.tools.base import PermissionDenied, ToolContext
+from .contracts import (
+    ExecutionPlan,
+    NarrativeSnippet,
+    Observation,
+    ToolContext,
+    ToolGateway,
+    ToolPermissionDenied,
+    Tracer,
+)
 from .model import Conversation, ModelClient, ModelError
 from .prompts import EVIDENCE_PLANNER
 from .toolspec import AGENT_TOOLS, ALLOWED_TOOL_NAMES
@@ -47,8 +52,8 @@ class EvidenceGatheringAgent:
         self,
         *,
         model: ModelClient,
-        gateway: Any,
-        trace: TraceCollector,
+        gateway: ToolGateway,
+        trace: Tracer,
         max_iterations: int = 4,
     ) -> None:
         self._model = model
@@ -155,7 +160,7 @@ class EvidenceGatheringAgent:
                 payload = self._invoke(context, use, result)
                 outcomes.append((use.tool_use_id, payload, True))
                 result.tool_calls.append(use.name)
-            except PermissionDenied as exc:
+            except ToolPermissionDenied as exc:
                 outcomes.append((use.tool_use_id, {"error": str(exc)}, False))
             except Exception as exc:  # noqa: BLE001 - 루프를 죽이지 않는다
                 outcomes.append(

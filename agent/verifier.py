@@ -10,12 +10,16 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from typing import Any
 
-from app.domain.models import EvidenceBundle, Verification
-from app.domain.states import CriterionStatus
-from app.reasoning.verifier import LocalEvidenceVerifier
-from app.safety.observability import TraceCollector
+from .contracts import (
+    CriterionStatus,
+    EvidenceBundle,
+    EvidenceVerifier,
+    Tracer,
+    Verification,
+)
 from .model import Conversation, ModelClient, ModelError
 from .prompts import NLI_VERIFIER
 
@@ -36,8 +40,8 @@ class ModelEvidenceVerifier:
         self,
         *,
         model: ModelClient,
-        fallback: LocalEvidenceVerifier,
-        trace: TraceCollector,
+        fallback: EvidenceVerifier,
+        trace: Tracer,
     ) -> None:
         self._model = model
         self._fallback = fallback
@@ -104,11 +108,11 @@ class ModelEvidenceVerifier:
                 f"모델 판정({proposed})과 규칙 판정({local.proposed_status})이 "
                 "달라 검토가 필요합니다."
             )
-            return Verification(
-                criterion_id=rule.criterion_id,
+            # 폴백 결과를 복사해 필드만 바꾼다. 구체 타입을 알 필요가 없다.
+            return replace(
+                local,
                 proposed_status=CriterionStatus.REVIEW_REQUIRED,
                 confidence=min(confidence, 0.5),
-                grounded=local.grounded,
                 conflicts=tuple(conflicts),
                 notes=tuple(notes),
             )
@@ -119,11 +123,10 @@ class ModelEvidenceVerifier:
         ):
             proposed = CriterionStatus.REVIEW_REQUIRED
 
-        return Verification(
-            criterion_id=rule.criterion_id,
+        return replace(
+            local,
             proposed_status=proposed,
             confidence=confidence,
-            grounded=local.grounded,
             conflicts=tuple(conflicts) or local.conflicts,
             notes=tuple(notes),
         )
@@ -202,11 +205,4 @@ class ModelEvidenceVerifier:
 
     @staticmethod
     def _with_note(verification: Verification, note: str) -> Verification:
-        return Verification(
-            criterion_id=verification.criterion_id,
-            proposed_status=verification.proposed_status,
-            confidence=verification.confidence,
-            grounded=verification.grounded,
-            conflicts=verification.conflicts,
-            notes=(*verification.notes, note),
-        )
+        return replace(verification, notes=(*verification.notes, note))

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
+from agent.contracts import ToolPermissionDenied
+
 
 class DataStore(StrEnum):
     """접근 대상 저장소. 실제 배포 시 IAM 리소스에 매핑된다."""
@@ -38,8 +40,13 @@ class Permission:
         return f"{self.action}:{self.store}"
 
 
-class PermissionDenied(RuntimeError):
-    """Gateway 가 선언되지 않은 접근을 막았을 때 발생한다."""
+class PermissionDenied(ToolPermissionDenied):
+    """Gateway 가 선언되지 않은 접근을 막았을 때 발생한다.
+
+    에이전트 계층이 잡을 수 있도록 `agent.contracts.ToolPermissionDenied` 를
+    상속한다. 에이전트는 권한 거부라는 사실만 알고, 어떤 저장소 권한이었는지는
+    이 계층의 관심사로 남긴다.
+    """
 
     def __init__(self, tool_name: str, permission: Permission) -> None:
         super().__init__(

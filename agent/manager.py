@@ -10,20 +10,23 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from app.actions.explanation import ExplanationAgent
-from app.actions.next_best import NextBestEvidenceAgent
-from app.config import ModelSettings
-from app.reasoning.verifier import LocalEvidenceVerifier
-from app.safety.guardrails import LocalGuardrail
-from app.safety.observability import TraceCollector
-from agent.loop import EvidenceGatheringAgent
-from agent.model import ModelClient, StubModelClient
-from agent.narration import ModelExplanationAgent, ModelNextBestEvidenceAgent
-from agent.toolspec import tool_names
-from agent.verifier import ModelEvidenceVerifier
+from .contracts import (
+    AgentSettings,
+    EvidenceVerifier,
+    ExplanationWriter,
+    Guardrail,
+    NextBestEvidenceWriter,
+    ToolGateway,
+    Tracer,
+)
+from .loop import EvidenceGatheringAgent
+from .model import ModelClient, StubModelClient
+from .narration import ModelExplanationAgent, ModelNextBestEvidenceAgent
+from .toolspec import tool_names
+from .verifier import ModelEvidenceVerifier
 
 
-ModelFactory = Callable[[ModelSettings], tuple[ModelClient | None, str | None]]
+ModelFactory = Callable[[AgentSettings], tuple[ModelClient | None, str | None]]
 
 
 @dataclass
@@ -65,15 +68,23 @@ class ManagedAgents:
 
 
 class AgentManager:
-    """모델/로컬 fallback 기반 에이전트들을 한 곳에서 구성한다."""
+    """모델/로컬 fallback 기반 에이전트들을 한 곳에서 구성한다.
+
+    로컬 fallback 구현은 호출자가 주입한다. 이 계층은 어떤 구체 구현이 오는지
+    알지 않고, `contracts` 의 포트만 만족하면 그대로 조립한다.
+    """
 
     def __init__(
         self,
         *,
-        config: ModelSettings,
-        trace: TraceCollector,
-        guardrail: LocalGuardrail,
-        gateway: Any,
+        config: AgentSettings,
+        trace: Tracer,
+        guardrail: Guardrail,
+        gateway: ToolGateway,
+        local_verifier: EvidenceVerifier,
+        local_explainer: ExplanationWriter,
+        local_next_best: NextBestEvidenceWriter,
+        narration_guardrail: Guardrail | None = None,
         model_client: ModelClient | None = None,
         model_factory: ModelFactory | None = None,
     ) -> None:
@@ -81,15 +92,19 @@ class AgentManager:
         self._trace = trace
         self._guardrail = guardrail
         self._gateway = gateway
+        self._local_verifier = local_verifier
+        self._local_explainer = local_explainer
+        self._local_next_best = local_next_best
+        # 질문 문장에는 면책 문구를 붙이지 않는다. 호출자가 그 설정의 Guardrail 을
+        # 따로 주면 그것을 쓰고, 없으면 기본 Guardrail 을 쓴다.
+        self._narration_guardrail = narration_guardrail or guardrail
         self._model_client = model_client
         self._model_factory = model_factory
 
     def build(self) -> ManagedAgents:
-        local_verifier = LocalEvidenceVerifier(LocalGuardrail(attach_disclaimer=False))
-        local_explainer = ExplanationAgent(self._guardrail)
-        local_next_best = NextBestEvidenceAgent(
-            LocalGuardrail(attach_disclaimer=False)
-        )
+        local_verifier = self._local_verifier
+        local_explainer = self._local_explainer
+        local_next_best = self._local_next_best
 
         client, fallback_reason = self._resolve_model_client()
         if client is None:
@@ -119,7 +134,7 @@ class AgentManager:
         )
         next_best = ModelNextBestEvidenceAgent(
             model=client,
-            guardrail=LocalGuardrail(attach_disclaimer=False),
+            guardrail=self._narration_guardrail,
             fallback=local_next_best,
             trace=self._trace,
         )

@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .actions.cohort import CohortSelector
+from .actions.explanation import ExplanationAgent
+from .actions.next_best import NextBestEvidenceAgent
 from .actions.packet import EvidencePacketBuilder
 from agent.manager import AgentManager, AgentStatus
 from agent.model import BedrockModelClient, ModelClient, ModelError
@@ -24,6 +26,7 @@ from .persistence.audit import AuditTrail
 from .persistence.run_store import RunStore
 from .reasoning.aggregator import DeterministicAggregator
 from .reasoning.bundle import EvidenceBundleBuilder
+from .reasoning.verifier import LocalEvidenceVerifier
 from .repository import DatasetRepository
 from .safety.guardrails import LocalGuardrail
 from .safety.observability import TraceCollector
@@ -99,11 +102,21 @@ def build_container(
     for tool in (criteria_tool, retrieval_tool, timeline_tool, rule_evaluator):
         gateway.register(tool, allow=policy[tool.name])
 
+    # 에이전트 계층은 폴백 구현을 스스로 만들지 않는다. 어떤 구현을 쓸지는
+    # 이 파일에서 결정하고, 에이전트는 contracts 의 포트만 보고 조립한다.
     agents = AgentManager(
         config=config,
         trace=trace,
         guardrail=guardrail,
         gateway=gateway,
+        local_verifier=LocalEvidenceVerifier(
+            LocalGuardrail(attach_disclaimer=False)
+        ),
+        local_explainer=ExplanationAgent(guardrail),
+        local_next_best=NextBestEvidenceAgent(
+            LocalGuardrail(attach_disclaimer=False)
+        ),
+        narration_guardrail=LocalGuardrail(attach_disclaimer=False),
         model_client=model_client,
         model_factory=_build_model_client,
     ).build()

@@ -33,12 +33,17 @@ backend/.venv/Scripts/python -m uvicorn app.main:app --app-dir backend/api --rel
 - Swagger: `http://127.0.0.1:8000/docs`
 - 상태 확인: `http://127.0.0.1:8000/health`
 
+`python -m uvicorn` 을 저장소 루트에서 실행해야 합니다. `-m` 이 루트를 import 경로에
+넣어 `agent` 패키지를 찾고, `--app-dir` 이 `backend/api` 를 넣어 `app` 패키지를 찾습니다.
+
 테스트:
 
 ```powershell
 cd backend/api
 ../.venv/Scripts/python -m pytest tests -q
 ```
+
+경로 설정은 `backend/api/conftest.py` 가 처리하므로 어느 디렉터리에서 띄워도 됩니다.
 
 데이터 경로는 기본값이 저장소 루트의 `outputs/longitudinal_emr_v2/` 이며,
 `EMR_DATA_DIR` 환경 변수로 바꿀 수 있습니다.
@@ -56,9 +61,15 @@ cd backend/api
 | 8. 결과 생성 | `app/actions/` | Cohort Selector, Evidence Packet, Next-Best-Evidence, Explanation |
 | 9. 저장·응답 | `app/persistence/` | Run Store, 감사 로그 |
 | 횡단 | `app/safety/` | Guardrails, Observability |
-| 에이전트 | `app/agent/` | 모델 클라이언트, 도구 스키마, tool-use 루프, FM 검증·설명 |
+| 에이전트 | `agent/` (저장소 루트) | 모델 클라이언트, 도구 스키마, tool-use 루프, FM 검증·설명 |
 
 조립은 `app/container.py` 한 곳에서 이뤄집니다. AWS 어댑터로 바꿀 때 이 파일만 수정하면 됩니다.
+
+에이전트 계층은 이 패키지 밖(`agent/`)에 있고 `app` 을 import 하지 않습니다.
+필요한 동작은 `agent/contracts.py` 의 Protocol 로 선언되어 있고, `app/container.py`
+가 그 계약을 만족하는 구현(폴백 검증기·설명 생성기·Guardrail·Tracer·Gateway)을
+주입합니다. 의존성은 `app → agent` 한 방향입니다. 자세한 내용은
+[agent/README.md](../../agent/README.md) 를 참고하세요.
 
 ## 에이전트 계층
 
@@ -240,7 +251,7 @@ Rule Evaluator는 다른 Tool의 출력을 입력으로 받지만, 직접 호출
 | `app/tools/criteria_tool.py` | CSV | DynamoDB Criteria Store |
 | `app/tools/evidence_retrieval.py` | 키워드 검색 | Bedrock KB + OpenSearch |
 | `app/tools/timeline_graph.py` | CSV | Amazon Neptune |
-| `app/agent/model.py` | 스텁 | Bedrock Converse (구현 완료, 미검증) |
+| `agent/model.py` | 스텁 | Bedrock Converse (구현 완료, 미검증) |
 | `app/safety/guardrails.py` | 정규식 | Bedrock Guardrails (연결부 구현) |
 | `app/persistence/run_store.py` | 메모리 | DynamoDB |
 | `app/persistence/audit.py` | 메모리 | DDB Streams → Firehose → S3 |
