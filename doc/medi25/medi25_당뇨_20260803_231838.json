@@ -1,0 +1,28 @@
+[
+  {
+    "source": "Medi25",
+    "trial_title": "당뇨, 유방암 1개 이상 있는 분(데이터 연구)",
+    "disease": "당뇨/유방암",
+    "sponsor": "살루스케어",
+    "hospital": "(서울 송파구)",
+    "location": "서울 송파구",
+    "age": "만30~65세",
+    "sex": "남성/여성",
+    "visit_schedule": "방문 1회",
+    "recruitment_status": "Recruiting",
+    "detail_url": "https://www.medi25.com/html/odition_1/odition_detail_read_step1_m.php?seq=12204"
+  },
+  {
+    "source": "Medi25",
+    "trial_title": "당뇨 동반 고혈압 있으신 분 BR-FDC-CT-301",
+    "disease": "당뇨/고혈압",
+    "sponsor": "보령",
+    "hospital": "선택",
+    "location": "전국",
+    "age": "만19세~",
+    "sex": "남성/여성",
+    "visit_schedule": "총 8회방문",
+    "recruitment_status": "Recruiting",
+    "detail_url": "https://www.medi25.com/html/odition_1/odition_detail_read_step1_m.php?seq=10713"
+  }
+]

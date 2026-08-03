@@ -1,0 +1,22 @@
+# 크롤링 결과 (개인정보 포함 가능)
+output/
+downloads/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 환경 변수 / 인증 정보
+.env
+*.key
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+desktop.ini
