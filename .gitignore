@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# 환경변수 / 자격증명
+.env
+.env.*
+!.env.example
+
+# CDK
+cdk.out/
+*.d.ts.map
+
+# Node
+node_modules/
+
+# 로그
+*.log
+
+# 대용량 데이터 / 생성 산출물 (레포에 커밋하지 않음)
+outputs/
+synthea-data/
+*.zip
+
+# OS / 에디터
+.DS_Store
+Thumbs.db
