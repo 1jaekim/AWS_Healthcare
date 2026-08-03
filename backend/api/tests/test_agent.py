@@ -799,6 +799,12 @@ def test_architecture_endpoint_reports_agent_status() -> None:
             "evidence_retrieval_tool",
             "timeline_graph_tool",
         }
+        managed = {item["name"]: item for item in body["agent"]["managed_agents"]}
+        assert "screening_orchestrator" in managed
+        assert "rag_evidence_retrieval" in managed
+        assert "intake_agent" in managed
+        assert managed["intake_agent"]["enabled"] is False
+        assert managed["intake_agent"]["mode"] == "planned"
 
 
 def test_stub_model_is_deterministic() -> None:

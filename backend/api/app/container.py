@@ -13,13 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .actions.cohort import CohortSelector
-from .actions.explanation import ExplanationAgent
-from .actions.next_best import NextBestEvidenceAgent
 from .actions.packet import EvidencePacketBuilder
-from .agent.loop import EvidenceGatheringAgent
-from .agent.model import BedrockModelClient, ModelClient, ModelError, StubModelClient
-from .agent.narration import ModelExplanationAgent, ModelNextBestEvidenceAgent
-from .agent.verifier import ModelEvidenceVerifier
+from .agent.manager import AgentManager, AgentStatus
+from .agent.model import BedrockModelClient, ModelClient, ModelError
 from .config import ModelSettings, settings as default_settings
 from .orchestration.gateway import ToolGateway, default_policy
 from .orchestration.router import CriterionRouter
@@ -28,7 +24,6 @@ from .persistence.audit import AuditTrail
 from .persistence.run_store import RunStore
 from .reasoning.aggregator import DeterministicAggregator
 from .reasoning.bundle import EvidenceBundleBuilder
-from .reasoning.verifier import LocalEvidenceVerifier
 from .repository import DatasetRepository
 from .safety.guardrails import LocalGuardrail
 from .safety.observability import TraceCollector
@@ -36,19 +31,6 @@ from .tools.criteria_tool import CriteriaTool
 from .tools.evidence_retrieval import EvidenceRetrievalTool
 from .tools.rule_evaluator import RuleEvaluator
 from .tools.timeline_graph import TimelineGraphTool
-
-
-@dataclass
-class AgentStatus:
-    """에이전트 계층 상태. /architecture 로 노출한다."""
-
-    enabled: bool
-    mode: str
-    model_id: str | None
-    region: str | None
-    max_iterations: int
-    guardrail_attached: bool
-    fallback_reason: str | None = None
 
 
 @dataclass
@@ -117,47 +99,14 @@ def build_container(
     for tool in (criteria_tool, retrieval_tool, timeline_tool, rule_evaluator):
         gateway.register(tool, allow=policy[tool.name])
 
-    local_verifier = LocalEvidenceVerifier(LocalGuardrail(attach_disclaimer=False))
-    local_explainer = ExplanationAgent(guardrail)
-    local_next_best = NextBestEvidenceAgent(LocalGuardrail(attach_disclaimer=False))
-
-    fallback_reason: str | None = None
-    client = model_client
-    if client is None:
-        client, fallback_reason = _build_model_client(config)
-        if client is None and config.enabled:
-            # Bedrock 을 켰는데 붙지 못했다. 스텁으로 내려앉는다.
-            client = StubModelClient()
-
-    if client is None:
-        verifier = local_verifier
-        explainer = local_explainer
-        next_best = local_next_best
-        gatherer = None
-        mode = "deterministic"
-    else:
-        verifier = ModelEvidenceVerifier(
-            model=client, fallback=local_verifier, trace=trace
-        )
-        explainer = ModelExplanationAgent(
-            model=client,
-            guardrail=guardrail,
-            fallback=local_explainer,
-            trace=trace,
-        )
-        next_best = ModelNextBestEvidenceAgent(
-            model=client,
-            guardrail=LocalGuardrail(attach_disclaimer=False),
-            fallback=local_next_best,
-            trace=trace,
-        )
-        gatherer = EvidenceGatheringAgent(
-            model=client,
-            gateway=gateway,
-            trace=trace,
-            max_iterations=config.max_agent_iterations,
-        )
-        mode = f"agent:{getattr(client, 'mode', 'unknown')}"
+    agents = AgentManager(
+        config=config,
+        trace=trace,
+        guardrail=guardrail,
+        gateway=gateway,
+        model_client=model_client,
+        model_factory=_build_model_client,
+    ).build()
 
     orchestrator = ScreeningOrchestrator(
         gateway=gateway,
@@ -165,16 +114,16 @@ def build_container(
         timeline_tool=timeline_tool,
         router=CriterionRouter(),
         bundler=EvidenceBundleBuilder(),
-        verifier=verifier,
+        verifier=agents.verifier,
         aggregator=DeterministicAggregator(),
         packet_builder=EvidencePacketBuilder(),
-        next_best=next_best,
-        explainer=explainer,
+        next_best=agents.next_best,
+        explainer=agents.explainer,
         run_store=run_store,
         audit=audit,
         trace=trace,
-        gatherer=gatherer,
-        mode=mode,
+        gatherer=agents.gatherer,
+        mode=agents.status.mode,
     )
 
     return Container(
@@ -188,13 +137,5 @@ def build_container(
         timeline_tool=timeline_tool,
         orchestrator=orchestrator,
         cohort_selector=CohortSelector(),
-        agent=AgentStatus(
-            enabled=client is not None,
-            mode=mode,
-            model_id=config.model_id if client is not None else None,
-            region=config.region if client is not None else None,
-            max_iterations=config.max_agent_iterations,
-            guardrail_attached=bool(config.guardrail_id),
-            fallback_reason=fallback_reason,
-        ),
+        agent=agents.status,
     )

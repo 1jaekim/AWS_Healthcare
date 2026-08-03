@@ -367,6 +367,18 @@ class ToolRegistryEntry(BaseModel):
     permissions: list[str]
 
 
+class ManagedAgentOut(BaseModel):
+    """에이전트 관리자에 등록된 개별 에이전트."""
+
+    name: str
+    role: str
+    enabled: bool
+    mode: str
+    model_backed: bool = False
+    exposed_tools: list[str] = Field(default_factory=list)
+    source: str | None = None
+
+
 class AgentStatusOut(BaseModel):
     """에이전트 계층 상태."""
 
@@ -378,6 +390,7 @@ class AgentStatusOut(BaseModel):
     guardrail_attached: bool
     fallback_reason: str | None = None
     exposed_tools: list[str] = Field(default_factory=list)
+    managed_agents: list[ManagedAgentOut] = Field(default_factory=list)
 
 
 class ArchitectureResponse(BaseModel):

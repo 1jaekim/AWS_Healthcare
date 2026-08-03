@@ -104,14 +104,18 @@ def health(repository: Repository) -> dict:
 )
 def architecture(container: Ctx) -> dict:
     """등록된 Tool 과 유효 권한, 저장소 카운트, 에이전트 상태를 반환한다."""
+    agent_status = {
+        **container.agent.__dict__,
+        "managed_agents": [
+            item.__dict__ for item in container.agent.managed_agents
+        ],
+        "exposed_tools": tool_names(),
+    }
     return {
         "tools": container.gateway.registry(),
         "stores": container.run_store.counts(),
         "audit_events": container.audit.size,
-        "agent": {
-            **container.agent.__dict__,
-            "exposed_tools": tool_names(),
-        },
+        "agent": agent_status,
     }
 
 
