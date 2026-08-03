@@ -13,10 +13,10 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..domain.models import NarrativeSnippet, Observation
-from ..orchestration.router import ExecutionPlan
-from ..safety.observability import TraceCollector
-from ..tools.base import PermissionDenied, ToolContext
+from app.domain.models import NarrativeSnippet, Observation
+from app.orchestration.router import ExecutionPlan
+from app.safety.observability import TraceCollector
+from app.tools.base import PermissionDenied, ToolContext
 from .model import Conversation, ModelClient, ModelError
 from .prompts import EVIDENCE_PLANNER
 from .toolspec import AGENT_TOOLS, ALLOWED_TOOL_NAMES

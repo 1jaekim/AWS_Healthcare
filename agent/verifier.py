@@ -12,10 +12,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..domain.models import EvidenceBundle, Verification
-from ..domain.states import CriterionStatus
-from ..reasoning.verifier import LocalEvidenceVerifier
-from ..safety.observability import TraceCollector
+from app.domain.models import EvidenceBundle, Verification
+from app.domain.states import CriterionStatus
+from app.reasoning.verifier import LocalEvidenceVerifier
+from app.safety.observability import TraceCollector
 from .model import Conversation, ModelClient, ModelError
 from .prompts import NLI_VERIFIER
 

@@ -19,15 +19,15 @@ FM은 적격성을 결정하지 않습니다. 동일 입력 → 동일 판정을
 
 | 에이전트 | 역할 | 구현 |
 |----------|------|------|
-| Evidence Gathering | tool-use 루프로 근거 수집 | `backend/api/app/agent/loop.py` |
-| Evidence Verifier | 근거 ↔ 기준 NLI 검증 | `backend/api/app/agent/verifier.py` |
-| Next Best Evidence | 정보 가치순 확인 질문 생성 | `backend/api/app/agent/narration.py` |
-| Explanation | 판정 근거 설명 생성 | `backend/api/app/agent/narration.py` |
+| Evidence Gathering | tool-use 루프로 근거 수집 | `agent/loop.py` |
+| Evidence Verifier | 근거 ↔ 기준 NLI 검증 | `agent/verifier.py` |
+| Next Best Evidence | 정보 가치순 확인 질문 생성 | `agent/narration.py` |
+| Explanation | 판정 근거 설명 생성 | `agent/narration.py` |
 | Medi25 Crawler | 모집공고 수집 (별도 계층) | `crawler/medi25-crawler-agent.md` |
 
-에이전트 조립·상태 관리는 `backend/api/agent/manager.py`,
-모델 클라이언트(Bedrock Converse / 스텁)는 `backend/api/app/agent/model.py`,
-프롬프트는 `backend/api/app/agent/prompts.py`, 도구 스펙은 `backend/api/app/agent/toolspec.py`에 있습니다.
+에이전트 조립·상태 관리는 `agent/manager.py`,
+모델 클라이언트(Bedrock Converse / 스텁)는 `agent/model.py`,
+프롬프트는 `agent/prompts.py`, 도구 스펙은 `agent/toolspec.py`에 있습니다.
 
 ## 담당 범위
 

@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from .agent.toolspec import tool_names
+from agent.toolspec import tool_names
 from .config import settings
 from .container import Container, build_container
 from .orchestration.runtime import PatientNotFound, TrialNotFound

@@ -12,15 +12,15 @@ from typing import Any, Callable
 
 from app.actions.explanation import ExplanationAgent
 from app.actions.next_best import NextBestEvidenceAgent
-from app.agent.loop import EvidenceGatheringAgent
-from app.agent.model import ModelClient, StubModelClient
-from app.agent.narration import ModelExplanationAgent, ModelNextBestEvidenceAgent
-from app.agent.toolspec import tool_names
-from app.agent.verifier import ModelEvidenceVerifier
 from app.config import ModelSettings
 from app.reasoning.verifier import LocalEvidenceVerifier
 from app.safety.guardrails import LocalGuardrail
 from app.safety.observability import TraceCollector
+from agent.loop import EvidenceGatheringAgent
+from agent.model import ModelClient, StubModelClient
+from agent.narration import ModelExplanationAgent, ModelNextBestEvidenceAgent
+from agent.toolspec import tool_names
+from agent.verifier import ModelEvidenceVerifier
 
 
 ModelFactory = Callable[[ModelSettings], tuple[ModelClient | None, str | None]]
@@ -207,7 +207,7 @@ class AgentManager:
                 mode=gatherer_mode,
                 model_backed=model_backed,
                 exposed_tools=tool_names() if enabled else [],
-                source="app/agent/loop.py",
+                source="agent/loop.py",
             ),
             ManagedAgentInfo(
                 name="intake_agent",
@@ -223,7 +223,7 @@ class AgentManager:
                 enabled=True,
                 mode=mode,
                 model_backed=model_backed,
-                source="app/agent/verifier.py",
+                source="agent/verifier.py",
             ),
             ManagedAgentInfo(
                 name="next_best_evidence",
@@ -231,7 +231,7 @@ class AgentManager:
                 enabled=True,
                 mode=mode,
                 model_backed=model_backed,
-                source="app/agent/narration.py",
+                source="agent/narration.py",
             ),
             ManagedAgentInfo(
                 name="explanation_agent",
@@ -239,6 +239,6 @@ class AgentManager:
                 enabled=True,
                 mode=mode,
                 model_backed=model_backed,
-                source="app/agent/narration.py",
+                source="agent/narration.py",
             ),
         ]

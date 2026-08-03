@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from app.agent.model import (
+from agent.model import (
     BedrockModelClient,
     Conversation,
     ModelError,
@@ -19,7 +19,7 @@ from app.agent.model import (
     StubModelClient,
     ToolUse,
 )
-from app.agent.toolspec import ALLOWED_TOOL_NAMES, AGENT_TOOLS
+from agent.toolspec import ALLOWED_TOOL_NAMES, AGENT_TOOLS
 from app.config import ModelSettings
 from app.container import build_container
 from app.domain.models import (
@@ -244,7 +244,7 @@ def test_model_cannot_see_judgement_or_write_tools() -> None:
 
 def test_agent_loop_rejects_tool_outside_whitelist() -> None:
     """모델이 허용 목록 밖 도구를 부르면 실행하지 않고 오류를 돌려준다."""
-    from app.agent.loop import EvidenceGatheringAgent
+    from agent.loop import EvidenceGatheringAgent
     from app.orchestration.router import CriterionRouter
     from app.tools.base import ToolContext
 
@@ -300,7 +300,7 @@ def test_agent_loop_rejects_tool_outside_whitelist() -> None:
 
 def test_agent_loop_respects_iteration_cap() -> None:
     """모델이 계속 도구를 요청해도 상한에서 멈춘다."""
-    from app.agent.loop import EvidenceGatheringAgent
+    from agent.loop import EvidenceGatheringAgent
     from app.orchestration.router import CriterionRouter
     from app.tools.base import ToolContext
 
@@ -347,7 +347,7 @@ def test_agent_loop_respects_iteration_cap() -> None:
 
 def test_agent_loop_skips_when_nothing_missing() -> None:
     """수집할 근거가 없으면 모델을 호출하지 않는다."""
-    from app.agent.loop import EvidenceGatheringAgent
+    from agent.loop import EvidenceGatheringAgent
     from app.orchestration.router import CriterionRouter
     from app.tools.base import ToolContext
 
@@ -395,7 +395,7 @@ def test_agent_loop_skips_when_nothing_missing() -> None:
 
 
 def _verifier(model):
-    from app.agent.verifier import ModelEvidenceVerifier
+    from agent.verifier import ModelEvidenceVerifier
     from app.safety.guardrails import LocalGuardrail
 
     return ModelEvidenceVerifier(
@@ -501,7 +501,7 @@ def _outcome_and_results():
 
 def _explainer(model):
     from app.actions.explanation import ExplanationAgent
-    from app.agent.narration import ModelExplanationAgent
+    from agent.narration import ModelExplanationAgent
     from app.safety.guardrails import LocalGuardrail
 
     guardrail = LocalGuardrail()
@@ -582,7 +582,7 @@ def test_model_explanation_skips_model_without_sources() -> None:
 def test_model_question_writer_keeps_deterministic_priority() -> None:
     """질문 문장만 모델이 쓰고, 우선순위는 규칙이 정한다."""
     from app.actions.next_best import NextBestEvidenceAgent
-    from app.agent.narration import ModelNextBestEvidenceAgent
+    from agent.narration import ModelNextBestEvidenceAgent
     from app.domain.models import CriterionResult
     from app.domain.states import CriterionStatus
     from app.safety.guardrails import LocalGuardrail
@@ -635,7 +635,7 @@ def test_model_question_writer_keeps_deterministic_priority() -> None:
 
 def test_model_question_falls_back_on_error() -> None:
     from app.actions.next_best import NextBestEvidenceAgent
-    from app.agent.narration import ModelNextBestEvidenceAgent
+    from agent.narration import ModelNextBestEvidenceAgent
     from app.domain.models import CriterionResult
     from app.domain.states import CriterionStatus
     from app.safety.guardrails import LocalGuardrail
@@ -827,7 +827,7 @@ def test_agent_loop_does_not_repeat_fruitless_search() -> None:
 
     상태를 갱신하지 않으면 모델이 낡은 목록을 보고 같은 요청을 되풀이한다.
     """
-    from app.agent.loop import EvidenceGatheringAgent
+    from agent.loop import EvidenceGatheringAgent
     from app.orchestration.router import CriterionRouter
     from app.tools.base import ToolContext
 
@@ -905,7 +905,7 @@ def test_agent_loop_refreshes_state_inside_tool_result_message() -> None:
 
     별도 user 메시지로 보내면 Converse API 역할 교대 규칙을 깬다.
     """
-    from app.agent.loop import EvidenceGatheringAgent
+    from agent.loop import EvidenceGatheringAgent
     from app.orchestration.router import CriterionRouter
     from app.tools.base import ToolContext
 

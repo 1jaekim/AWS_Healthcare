@@ -9,13 +9,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..actions.explanation import Explanation, ExplanationAgent
-from ..actions.next_best import EvidenceRequest, NextBestEvidenceAgent
-from ..domain.models import CriterionResult
-from ..domain.states import CriterionStatus
-from ..reasoning.aggregator import AggregateOutcome
-from ..safety.guardrails import LocalGuardrail
-from ..safety.observability import TraceCollector
+from app.actions.explanation import Explanation, ExplanationAgent
+from app.actions.next_best import EvidenceRequest, NextBestEvidenceAgent
+from app.domain.models import CriterionResult
+from app.domain.states import CriterionStatus
+from app.reasoning.aggregator import AggregateOutcome
+from app.safety.guardrails import LocalGuardrail
+from app.safety.observability import TraceCollector
 from .model import Conversation, ModelClient, ModelError
 from .prompts import EXPLANATION_ADMIN, EXPLANATION_PATIENT, QUESTION_WRITER
 
