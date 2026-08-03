@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .actions.cohort import CohortSelector
 from .actions.packet import EvidencePacketBuilder
-from .agent.manager import AgentManager, AgentStatus
+from agent.manager import AgentManager, AgentStatus
 from .agent.model import BedrockModelClient, ModelClient, ModelError
 from .config import ModelSettings, settings as default_settings
 from .orchestration.gateway import ToolGateway, default_policy

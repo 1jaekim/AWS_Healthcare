@@ -10,17 +10,17 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from ..actions.explanation import ExplanationAgent
-from ..actions.next_best import NextBestEvidenceAgent
-from ..config import ModelSettings
-from ..reasoning.verifier import LocalEvidenceVerifier
-from ..safety.guardrails import LocalGuardrail
-from ..safety.observability import TraceCollector
-from .loop import EvidenceGatheringAgent
-from .model import ModelClient, StubModelClient
-from .narration import ModelExplanationAgent, ModelNextBestEvidenceAgent
-from .toolspec import tool_names
-from .verifier import ModelEvidenceVerifier
+from app.actions.explanation import ExplanationAgent
+from app.actions.next_best import NextBestEvidenceAgent
+from app.agent.loop import EvidenceGatheringAgent
+from app.agent.model import ModelClient, StubModelClient
+from app.agent.narration import ModelExplanationAgent, ModelNextBestEvidenceAgent
+from app.agent.toolspec import tool_names
+from app.agent.verifier import ModelEvidenceVerifier
+from app.config import ModelSettings
+from app.reasoning.verifier import LocalEvidenceVerifier
+from app.safety.guardrails import LocalGuardrail
+from app.safety.observability import TraceCollector
 
 
 ModelFactory = Callable[[ModelSettings], tuple[ModelClient | None, str | None]]
