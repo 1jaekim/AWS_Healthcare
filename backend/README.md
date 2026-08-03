@@ -1,138 +1,193 @@
-# AWS Healthcare Backend Pipeline
+# AWS Healthcare Backend
 
-임상시험 매칭 플랫폼을 위한 데이터 파이프라인 백엔드입니다.  
-환자 EMR 데이터를 전처리하고, 임상시험 공고를 구조화하여 매칭 계층에 제공합니다.
+임상시험 매칭 플랫폼의 백엔드입니다.  
+**데이터 파이프라인**(전처리·검색·그래프)과 **스크리닝 API**(환자↔임상시험 매칭)로 구성됩니다.
 
-## 아키텍처 개요
+## 전체 아키텍처
 
 ```
-현재 보유 데이터          전처리              Amazon S3           검색·그래프 구축
-┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌────────────────────┐
-│clinical_notes│───▶│  Sanitizer   │───▶│  raw/ 원본  │───▶│ Bedrock KB         │
-│  .jsonl      │    │ PHI 마스킹   │    │  rag/ 비식별│    │ OpenSearch Vector  │
-│ 10,485 노트  │    │ 판정문장 제거 │    │             │    │                    │
-└─────────────┘    └──────────────┘    │             │    └────────────────────┘
-                                       │             │
-┌─────────────┐    ┌──────────────┐    │             │    ┌────────────────────┐
-│timeline.csv  │───▶│  Graph ETL   │───▶│  graph/     │───▶│ Neptune 그래프     │
-│measurement   │    │ Node·Edge CSV│    │  Neptune CSV│    │ Bulk Load + Upsert │
-│medication    │    └──────────────┘    │             │    └────────────────────┘
-└─────────────┘                        │             │
-                                       │             │    ┌────────────────────┐
-┌─────────────┐    ┌──────────────┐    │             │    │ Bedrock Protocol   │
-│임상시험 공고  │───▶│  공고 업로드  │───▶│  trials/    │───▶│ Parser → DynamoDB  │
-│ PDF · 자연어 │    └──────────────┘    │  공고 원문  │    │ Criteria Store     │
-└─────────────┘                        └─────────────┘    └────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         데이터 파이프라인 (infra/ + lambdas/)                  │
+│                                                                             │
+│  clinical_notes.jsonl ──▶ Sanitizer ──▶ S3 rag/ ──▶ Bedrock KB ──▶ OpenSearch│
+│  timeline/measurement ──▶ Graph ETL ──▶ S3 graph/ ──▶ Neptune 그래프         │
+│  임상시험 공고 PDF ──────▶ Protocol Parser ──▶ DynamoDB Criteria Store        │
+│                                                                             │
+└────────────────────────────────────┬────────────────────────────────────────┘
+                                     │ 데이터 읽기
+                                     ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      스크리닝 오케스트레이터 API (api/)                        │
+│                                                                             │
+│  환자 x 시험 매칭 요청                                                       │
+│    → 근거 수집 (OpenSearch + Neptune)                                        │
+│    → 기준별 판정 (규칙 + Bedrock FM)                                         │
+│    → 종합 적격성 확정                                                        │
+│    → 근거 패킷 · 확인 질문 · 설명 반환                                        │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## 프로젝트 구조
 
 ```
 backend/
-├── app.py                           # CDK 엔트리포인트
-├── cdk.json                         # CDK 설정
-├── requirements.txt                 # CDK 의존성
+├── app.py                            # CDK 엔트리포인트
+├── cdk.json                          # CDK 설정
+├── requirements.txt                  # CDK 의존성
+│
 ├── config/
-│   └── settings.py                  # 전역 환경변수 설정
-├── infra/
-│   ├── s3_stack.py                  # S3 데이터 레이크 (KMS 암호화)
-│   ├── bedrock_stack.py             # Bedrock KB + OpenSearch Serverless
-│   ├── observability_stack.py       # CloudWatch 대시보드/알람/SNS
-│   └── main_stack.py               # Lambda, Neptune, DynamoDB, Step Functions
-├── lambdas/
-│   ├── sanitizer/                   # PHI 마스킹 + 판정 문장 제거
-│   ├── graph_etl/                   # CSV → Neptune Node/Edge CSV 변환
-│   ├── neptune_upsert/              # Bulk Load + 증분 Gremlin Upsert
-│   ├── protocol_parser/             # 공고 PDF → 선정/제외 기준 JSON
-│   └── opensearch_query/            # Bedrock KB Retrieve API
-├── step_functions/
-│   ├── emr_pipeline.json            # Sanitizer → GraphETL → Neptune
-│   └── trials_pipeline.json         # Protocol Parser → SNS 검토 알림
+│   └── settings.py                   # 전역 환경변수 설정
+│
+├── infra/                            # AWS CDK 인프라 코드
+│   ├── s3_stack.py                   # S3 데이터 레이크 (KMS 암호화)
+│   ├── bedrock_stack.py              # Bedrock KB + OpenSearch Serverless
+│   ├── observability_stack.py        # CloudWatch 대시보드/알람/SNS
+│   └── main_stack.py                # Lambda, Neptune, DynamoDB, Step Functions
+│
+├── lambdas/                          # 데이터 파이프라인 Lambda
+│   ├── sanitizer/                    # PHI 마스킹 + 판정 문장 제거
+│   ├── graph_etl/                    # CSV → Neptune Node/Edge CSV 변환
+│   ├── neptune_upsert/               # Bulk Load + 증분 Gremlin Upsert
+│   ├── protocol_parser/              # 공고 PDF → 선정/제외 기준 JSON
+│   └── opensearch_query/             # Bedrock KB Retrieve API
+│
+├── step_functions/                   # 파이프라인 오케스트레이션
+│   ├── emr_pipeline.json             # Sanitizer → GraphETL → Neptune
+│   └── trials_pipeline.json          # Protocol Parser → SNS 검토 알림
+│
+├── api/                              # 스크리닝 오케스트레이터 API (FastAPI)
+│   ├── app/
+│   │   ├── main.py                   # API 진입점 (FastAPI)
+│   │   ├── container.py              # 의존성 조립 (어댑터 교체 지점)
+│   │   ├── orchestration/            # Runtime, Router, Gateway
+│   │   ├── agent/                    # Bedrock FM 에이전트 (tool-use 루프)
+│   │   ├── tools/                    # Criteria, Evidence, Timeline, Rule
+│   │   ├── reasoning/                # 근거 검증, 취합, 상태 확정
+│   │   ├── actions/                  # Cohort, Packet, NextBest, Explanation
+│   │   ├── domain/                   # 상태 모델, 기준 정의
+│   │   ├── persistence/              # Run Store, 감사 로그
+│   │   ├── safety/                   # Guardrails, Observability
+│   │   ├── repository.py             # 데이터 어댑터 (CSV → AWS 전환 예정)
+│   │   └── schemas.py                # Pydantic 스키마
+│   ├── tests/                        # API 테스트
+│   └── requirements.txt              # API 의존성
+│
 ├── tests/
 └── scripts/
 ```
 
-## 주요 컴포넌트
+## 데이터 파이프라인 (infra/ + lambdas/)
 
-### 1. Sanitizer Lambda
-- `clinical_notes.jsonl` (10,485개) → 비식별 EMR 생성
-- PHI 마스킹: 이름, 날짜, 전화번호, SSN, 이메일, MRN, 주소
-- 판정 문장 제거: 확정 진단/판정 관련 문장 필터링
-- 출력: canonical 2,097건 → S3 `rag/`
+### Lambda 함수
 
-### 2. Graph ETL Lambda
-- timeline / measurement / medication CSV 파싱
-- Neptune Bulk Loader 형식 CSV 생성 (Node + Edge)
-- 노드: Patient, Event, Measurement, Medication
-- 엣지: HAS_EVENT, HAS_MEASUREMENT, TAKES_MEDICATION, RECORDED_DURING
+| Lambda | 역할 | 입력 → 출력 |
+|--------|------|-------------|
+| Sanitizer | PHI 마스킹 + 판정 문장 제거 | `raw/clinical_notes.jsonl` → `rag/canonical_notes.jsonl` |
+| Graph ETL | Neptune CSV 생성 | `raw/*.csv` → `graph/nodes/`, `graph/edges/` |
+| Neptune Upsert | 그래프 적재 | `graph/*.csv` → Neptune (Bulk Load + Gremlin) |
+| Protocol Parser | 공고 구조화 | `trials/*.pdf` → DynamoDB Criteria Store |
+| OpenSearch Query | EMR 검색 | 쿼리 → Bedrock KB Retrieve |
 
-### 3. Neptune Upsert Lambda
-- **초기 적재**: Neptune Bulk Loader API
-- **증분 업데이트**: S3 이벤트 → Gremlin upsert (fold + coalesce 패턴)
-- IAM SigV4 인증, VPC 내부 실행
+### Step Functions 워크플로우
 
-### 4. Protocol Parser Lambda
-- 임상시험 공고 PDF → Textract 텍스트 추출
-- Bedrock Claude → 선정/제외 기준 구조화 JSON
-- DynamoDB Criteria Store 저장 (status: `pending_review`)
-- 연구자 검토 후 `approved`로 상태 변경
-
-### 5. OpenSearch Query Lambda
-- Bedrock Knowledge Bases Retrieve API 호출
-- 벡터 유사도 + 키워드 하이브리드 검색
-- 필터 지원 (note_type, patient_id)
-
-## Step Functions 워크플로우
-
-### EMR Pipeline
+**EMR Pipeline:**
 ```
 Sanitizer → Graph ETL → Neptune Bulk Load → (상태 폴링) → 완료
 ```
-- 각 단계 재시도 3회 (BackoffRate 2.0)
-- 실패 시 SNS 알림 + DLQ 전달
 
-### Trials Pipeline
+**Trials Pipeline:**
 ```
 EventBridge (trials/ 업로드) → Protocol Parser → SNS 검토 알림
 ```
-- Bedrock 쓰로틀링 대응 (재시도 5회)
+
+- 모든 단계 재시도 3회 (BackoffRate 2.0) + DLQ
 - 실패 시 SNS 알림
 
-## 관측성
+### 관측성
 
-- **CloudWatch Dashboard**: Lambda 호출/에러/실행시간, Bedrock 토큰/비용
-- **알람**: Lambda 에러(≥3회/5분), 쓰로틀(≥5회), Duration(p95 > 240s)
-- **SNS 알림**: 파이프라인 실패, 검토 대기건
-- **로그 보존**: 30일
+- CloudWatch Dashboard: Lambda 호출/에러/실행시간, Bedrock 토큰/비용
+- 알람: 에러(≥3회/5분), 쓰로틀(≥5회), Duration(p95 > 240s)
+- SNS 알림: 파이프라인 실패, 검토 대기건
 
-## 배포 방법
+## 스크리닝 API (api/)
 
-### 사전 요구사항
-- Python 3.12+
-- AWS CLI 설정 완료 (`aws configure`)
-- AWS CDK CLI (`npm install -g aws-cdk`)
+9계층 스크리닝 오케스트레이터입니다. 기준별로 근거를 수집·검증한 뒤 판정하고, 근거 패킷·확인 질문·설명을 반환합니다.
 
-### 배포
+### 주요 API 엔드포인트
+
+| Method | Path | 설명 |
+|--------|------|------|
+| `POST` | `/api/v1/screening/run` | 환자 x 시험 스크리닝 실행 |
+| `GET` | `/api/v1/screening/{run_id}` | 실행 결과 조회 |
+| `GET` | `/api/v1/screening/{run_id}/evidence` | 기준별 근거 패킷 |
+| `POST` | `/api/v1/cohort/run` | 배치 코호트 분석 |
+| `GET` | `/api/v1/patients/{person_id}/questions` | 확인 질문 (정보 가치 순) |
+| `GET` | `/api/v1/review-queue` | 검토 대기 목록 |
+
+### 판정 상태
+
+| 상태 | 의미 |
+|------|------|
+| `EVIDENCE_FOUND` | 근거 확인, 조건 충족 |
+| `CONTRADICTED` | 근거 확인, 조건 충돌 (부적합) |
+| `UNKNOWN` | 관찰값 없음 → 확인 질문 생성 |
+| `CONFLICTING` | 기록 간 값 불일치 → 검토 큐 |
+| `REVIEW_REQUIRED` | 자동 판정 신뢰도 낮음 → 검토 큐 |
+
+### FM vs 규칙 역할 분리
+
+| 담당 | 주체 |
+|------|------|
+| 근거 수집 판단, NLI 검증, 설명/질문 생성 | Bedrock FM |
+| 수치·기간 계산, **기준별 상태 확정**, **종합 적격성 판정** | 규칙 (결정론적) |
+
+FM은 적격성을 결정하지 않습니다. 동일 입력 → 동일 판정 보장을 위한 설계입니다.
+
+## 파이프라인 ↔ API 연결 지점
+
+파이프라인이 생성한 데이터를 API가 읽어서 사용합니다:
+
+| API Tool | 현재 (로컬 어댑터) | 파이프라인 연결 후 |
+|----------|-------------------|-------------------|
+| `criteria_tool` | CSV | DynamoDB Criteria Store |
+| `evidence_retrieval_tool` | 키워드 검색 | Bedrock KB + OpenSearch |
+| `timeline_graph_tool` | CSV | Amazon Neptune |
+| `agent/model` | 스텁 | Bedrock Converse API |
+| `persistence/run_store` | 메모리 | DynamoDB |
+
+교체 지점: `api/app/container.py` 한 곳에서 어댑터를 바꾸면 됩니다.
+
+## 실행 방법
+
+### 인프라 배포 (CDK)
 
 ```bash
 cd backend
 pip install -r requirements.txt
-
-# 알림 이메일 설정 (선택)
 export ALERT_EMAIL="your-email@example.com"
-
-# 최초 배포 시 bootstrap 필요
-cdk bootstrap
-
-# 전체 배포
+cdk bootstrap    # 최초 1회
 cdk deploy --all
 ```
 
-### 배포 스택 순서
-1. `HealthcareS3Stack` - S3 데이터 레이크
-2. `HealthcareBedrockStack` - Bedrock KB + OpenSearch
-3. `HealthcareObservabilityStack` - 모니터링
-4. `HealthcareMainStack` - Lambda, Neptune, Step Functions
+### API 로컬 실행
+
+```bash
+python -m venv backend/.venv
+source backend/.venv/bin/activate
+pip install -r backend/api/requirements.txt
+uvicorn app.main:app --app-dir backend/api --reload --port 8000
+```
+
+- Swagger: http://127.0.0.1:8000/docs
+- 상태 확인: http://127.0.0.1:8000/health
+
+### API 테스트
+
+```bash
+cd backend/api
+pytest tests -q
+```
 
 ## S3 버킷 구조
 
@@ -143,11 +198,21 @@ cdk deploy --all
 | `graph/` | Neptune CSV | KMS 암호화 |
 | `trials/` | 임상시험 공고 원문 | KMS 암호화 |
 
-## 담당 범위
+## 배포 스택 순서
 
-- ✅ 데이터 전처리 (Sanitizer, Graph ETL)
-- ✅ 검색·그래프 구축 (Bedrock KB, OpenSearch, Neptune)
-- ✅ 공고 구조화 (Protocol Parser, DynamoDB)
-- ✅ 파이프라인 오케스트레이션 (Step Functions)
-- ✅ 관측성 (CloudWatch)
-- ⬜ 매칭 계층 (연결 필요)
+1. `HealthcareS3Stack` - S3 데이터 레이크
+2. `HealthcareBedrockStack` - Bedrock KB + OpenSearch
+3. `HealthcareObservabilityStack` - 모니터링
+4. `HealthcareMainStack` - Lambda, Neptune, Step Functions
+
+## 담당 구분
+
+| 영역 | 담당 | 상태 |
+|------|------|------|
+| 데이터 전처리 (Sanitizer, Graph ETL) | 파이프라인 | ✅ 완료 |
+| 검색·그래프 (Bedrock KB, OpenSearch, Neptune) | 파이프라인 | ✅ 완료 |
+| 공고 구조화 (Protocol Parser, DynamoDB) | 파이프라인 | ✅ 완료 |
+| 파이프라인 오케스트레이션 (Step Functions) | 파이프라인 | ✅ 완료 |
+| 관측성 (CloudWatch) | 파이프라인 | ✅ 완료 |
+| 스크리닝 오케스트레이터 API | GGeunGGeun | ✅ 완료 |
+| 로컬 어댑터 → AWS 연결 | 공동 | 🔄 진행 예정 |
