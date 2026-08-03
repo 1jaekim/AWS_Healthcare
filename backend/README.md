@@ -150,4 +150,4 @@ cdk deploy --all
 - ✅ 공고 구조화 (Protocol Parser, DynamoDB)
 - ✅ 파이프라인 오케스트레이션 (Step Functions)
 - ✅ 관측성 (CloudWatch)
-- ⬜ 매칭 계층 (다른 팀원 담당)
+- ⬜ 매칭 계층 (연결 필요)
