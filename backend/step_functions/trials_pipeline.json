@@ -1,0 +1,87 @@
+{
+  "Comment": "임상시험 공고 구조화 파이프라인 - PDF 업로드 → Protocol Parser → DynamoDB",
+  "StartAt": "ParseProtocol",
+  "States": {
+    "ParseProtocol": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${ProtocolParserFunctionArn}",
+        "Payload": {
+          "source_key.$": "$.detail.object.key",
+          "bucket.$": "$.detail.bucket.name"
+        }
+      },
+      "ResultPath": "$.parser_result",
+      "ResultSelector": {
+        "status.$": "$.Payload.status",
+        "trial_id.$": "$.Payload.trial_id",
+        "trial_title.$": "$.Payload.trial_title",
+        "inclusion_count.$": "$.Payload.inclusion_count",
+        "exclusion_count.$": "$.Payload.exclusion_count"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["Lambda.TooManyRequestsException"],
+          "IntervalSeconds": 120,
+          "MaxAttempts": 5,
+          "BackoffRate": 2.0,
+          "Comment": "Bedrock 쓰로틀링 대응"
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 180,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "ParserFailed",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "NotifyReviewNeeded"
+    },
+
+    "NotifyReviewNeeded": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${AlertTopicArn}",
+        "Subject.$": "States.Format('[Healthcare] 기준 검토 필요: {}', $.parser_result.trial_id)",
+        "Message.$": "States.Format('임상시험 공고 구조화 완료.\\n\\nTrial ID: {}\\n제목: {}\\n선정기준: {}건\\n제외기준: {}건\\n\\n검토 후 승인해주세요.', $.parser_result.trial_id, $.parser_result.trial_title, $.parser_result.inclusion_count, $.parser_result.exclusion_count)"
+      },
+      "ResultPath": "$.notification",
+      "Next": "TrialsPipelineSuccess"
+    },
+
+    "TrialsPipelineSuccess": {
+      "Type": "Succeed"
+    },
+
+    "ParserFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${AlertTopicArn}",
+        "Subject": "[Healthcare Pipeline] 공고 구조화 실패",
+        "Message.$": "States.Format('Protocol Parser 실패.\\nSource: {}\\nError: {}', $.detail.object.key, $.error.Cause)"
+      },
+      "Next": "TrialsPipelineFailed"
+    },
+
+    "TrialsPipelineFailed": {
+      "Type": "Fail",
+      "Cause": "공고 구조화 파이프라인 처리 중 오류 발생",
+      "Error": "TrialsPipelineError"
+    }
+  }
+}

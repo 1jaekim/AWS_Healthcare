@@ -1,0 +1,216 @@
+{
+  "Comment": "EMR 전처리 파이프라인 - Sanitizer + Graph ETL + Neptune 초기 적재",
+  "StartAt": "Sanitizer",
+  "States": {
+    "Sanitizer": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${SanitizerFunctionArn}",
+        "Payload": {
+          "source_key": "raw/clinical_notes.jsonl"
+        }
+      },
+      "ResultPath": "$.sanitizer_result",
+      "ResultSelector": {
+        "status.$": "$.Payload.status",
+        "canonical_output.$": "$.Payload.canonical_output",
+        "output_key.$": "$.Payload.output_key"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 120,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "SanitizerFailed",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "GraphETL"
+    },
+
+    "GraphETL": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${GraphETLFunctionArn}",
+        "Payload": {
+          "timeline_key": "raw/timeline.csv",
+          "measurement_key": "raw/measurement.csv",
+          "medication_key": "raw/medication.csv"
+        }
+      },
+      "ResultPath": "$.graph_etl_result",
+      "ResultSelector": {
+        "status.$": "$.Payload.status",
+        "total_patients.$": "$.Payload.total_patients",
+        "output_prefix.$": "$.Payload.output_prefix"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        },
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 120,
+          "MaxAttempts": 2,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "GraphETLFailed",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "NeptuneBulkLoad"
+    },
+
+    "NeptuneBulkLoad": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${NeptuneUpsertFunctionArn}",
+        "Payload": {
+          "mode": "bulk_load",
+          "source.$": "$.graph_etl_result.output_prefix"
+        }
+      },
+      "ResultPath": "$.bulk_load_result",
+      "ResultSelector": {
+        "status.$": "$.Payload.status",
+        "load_id.$": "$.Payload.load_id"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException"],
+          "IntervalSeconds": 60,
+          "MaxAttempts": 3,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NeptuneLoadFailed",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "WaitForLoad"
+    },
+
+    "WaitForLoad": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "CheckLoadStatus"
+    },
+
+    "CheckLoadStatus": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${NeptuneUpsertFunctionArn}",
+        "Payload": {
+          "mode": "check_status",
+          "load_id.$": "$.bulk_load_result.load_id"
+        }
+      },
+      "ResultPath": "$.load_status",
+      "ResultSelector": {
+        "overall_status.$": "$.Payload.load_status.payload.overallStatus.status"
+      },
+      "Retry": [
+        {
+          "ErrorEquals": ["Lambda.ServiceException"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 1.5
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "NeptuneLoadFailed",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "IsLoadComplete"
+    },
+
+    "IsLoadComplete": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.load_status.overall_status",
+          "StringEquals": "LOAD_COMPLETED",
+          "Next": "PipelineSuccess"
+        },
+        {
+          "Variable": "$.load_status.overall_status",
+          "StringEquals": "LOAD_FAILED",
+          "Next": "NeptuneLoadFailed"
+        }
+      ],
+      "Default": "WaitForLoad"
+    },
+
+    "PipelineSuccess": {
+      "Type": "Succeed"
+    },
+
+    "SanitizerFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${AlertTopicArn}",
+        "Subject": "[Healthcare Pipeline] Sanitizer 실패",
+        "Message.$": "States.Format('Sanitizer Lambda 실패. Error: {}', $.error.Cause)"
+      },
+      "Next": "PipelineFailed"
+    },
+
+    "GraphETLFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${AlertTopicArn}",
+        "Subject": "[Healthcare Pipeline] Graph ETL 실패",
+        "Message.$": "States.Format('Graph ETL Lambda 실패. Error: {}', $.error.Cause)"
+      },
+      "Next": "PipelineFailed"
+    },
+
+    "NeptuneLoadFailed": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${AlertTopicArn}",
+        "Subject": "[Healthcare Pipeline] Neptune Load 실패",
+        "Message.$": "States.Format('Neptune Bulk Load 실패. Error: {}', $.error.Cause)"
+      },
+      "Next": "PipelineFailed"
+    },
+
+    "PipelineFailed": {
+      "Type": "Fail",
+      "Cause": "파이프라인 처리 중 오류 발생",
+      "Error": "PipelineExecutionError"
+    }
+  }
+}
