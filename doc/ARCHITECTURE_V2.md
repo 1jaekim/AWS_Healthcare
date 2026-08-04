@@ -113,7 +113,7 @@ flowchart TD
     VERIFY --> QGEN
     VERIFY --> A2A
     QGEN --> API
-    A2A --> VERIFY
+    A2A --> DDBRUN
     VERIFY --> DDBRUN
 
     ORCH --> GUARD
@@ -269,10 +269,11 @@ sequenceDiagram
     LLM-->>ORCH: proposed_status JSON
     ORCH->>VERIFY: 근거/규칙 검증
     VERIFY-->>ORCH: OK/NOT_OK/UNKNOWN
+    ORCH->>DB: 명확한 OK/NOT_OK 결과 저장
     ORCH->>Q: 남은 UNKNOWN 질문 후보 정리
     ORCH->>D: 애매한 UNKNOWN A2A 토론
-    D-->>VERIFY: 토론 결과
-    ORCH->>DB: 결과/보고서/감사 로그 저장
+    D-->>ORCH: 토론 종료 결과
+    ORCH->>DB: 추천 결과/보고서/A2A 로그 저장
     ORCH-->>API: 추천 결과 반환
 ```
 
@@ -286,7 +287,7 @@ sequenceDiagram
 | `RagAgent` | 표준문서, 환자정보, 공고 원문 근거 검색 | `search_rag_evidence` |
 | `CriteriaAgent` | 기준 문장 해석, 판단 입력 구성 | Criteria Store |
 | `QuestionAgent` | 환자정보 기입 직후 부족 정보 질문 생성, 최대 5개 제한 | profile, missing fields |
-| `A2A Debate Agents` | 애매한 기준 토론 | evidence bundle |
+| `A2A Debate Agents` | 애매한 기준을 제한 라운드로 토론하고 추천/검토로 종료 | evidence bundle |
 | `Verifier` | LLM 제안 검증 및 최종 상태 확정 | `evaluate_rule`, Guardrails |
 
 ## LLM 판단 구조
@@ -344,11 +345,12 @@ Verifier 확정 규칙:
 |------|-----------|
 | 근거가 존재하고 날짜/단위/연산자 검증 통과 | `OK` 또는 `NOT_OK` |
 | 근거가 없거나 필수 정보가 부족 | `UNKNOWN` |
-| LLM 제안과 규칙 결과가 충돌 | `UNKNOWN` 후 A2A |
-| A2A 후에도 합의 불가 | `UNKNOWN` 또는 Human Review |
+| LLM 제안과 규칙 결과가 충돌 | A2A 토론 대상으로 분류 |
+| A2A 합의 가능 | 토론 결과를 추천 점수와 기준 상태에 반영 |
+| A2A 후에도 합의 불가 | Human Review |
 | 출력에 직접 식별 정보 포함 | 차단 후 재생성 |
 
-재질문은 매칭 실행 전에 정보 가치가 높은 순서로 최대 5개만 생성한다. 매칭 이후 남는 질문 후보는 사용자에게 바로 묻기보다 A2A 또는 Human Review 대상으로 넘긴다.
+재질문은 매칭 실행 전에 정보 가치가 높은 순서로 최대 5개만 생성한다. 매칭 이후 남는 질문 후보는 사용자에게 바로 묻기보다 A2A 또는 Human Review 대상으로 넘긴다. A2A는 다시 Verifier로 순환하지 않고 토론 종료 결과를 추천 또는 검토 큐에 반영한다.
 
 ## UNKNOWN 처리
 
@@ -359,14 +361,13 @@ flowchart TD
     C -->|근거 충돌| D["A2A 토론"]
     C -->|기준 해석 애매| D
     C -->|표준문서 매핑 불확실| D
-    Q --> A["사용자 추가 설문"]
-    A --> R["재판정"]
+    Q --> H["Human Review 또는 다음 실행"]
     D --> J{"합의 가능?"}
-    J -->|예| R
+    J -->|예| R["추천 결과에 반영"]
     J -->|아니오| H["Human Review Queue"]
 ```
 
-`UNKNOWN`은 실패가 아니라 추가 정보 수집 또는 검토 상태다. 사용자 재질문은 앞단에서 최대 5개까지만 수행하고, 매칭 이후 남은 `UNKNOWN`은 A2A 토론과 Human Review 중심으로 처리한다.
+`UNKNOWN`은 실패가 아니라 추가 정보 수집 또는 검토 상태다. 사용자 재질문은 앞단에서 최대 5개까지만 수행하고, 매칭 이후 남은 `UNKNOWN`은 A2A 토론과 Human Review 중심으로 처리한다. A2A 결과는 추천으로 바로 반영하거나 검토 큐로 종료해야 하며 재귀 루프를 만들지 않는다.
 
 ## AWS 구성 요약
 

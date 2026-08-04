@@ -46,11 +46,12 @@ flowchart TD
     M --> V["Verifier / Rule Aggregator"]
     V --> O["OK / NOT_OK / UNKNOWN"]
 
-    O -->|판단 애매/남은 UNKNOWN| A2A["A2A 에이전트 토론"]
-    A2A --> V
-
-    O --> REC["최적 임상시험 추천"]
+    O -->|판단 애매/남은 UNKNOWN| A2A["A2A 에이전트 토론<br/>제한 라운드"]
+    A2A -->|토론 결과 반영| REC["최적 임상시험 추천"]
+    A2A -->|합의 불가| HR["Human Review Queue"]
+    O -->|판정 완료| REC
     REC --> REP["보고서 저장"]
+    HR --> REP
 ```
 
 ## 시작점과 자동화 관점
@@ -568,9 +569,12 @@ sequenceDiagram
     LLM-->>ORCH: OK/NOT_OK/UNKNOWN 제안 JSON
     ORCH->>VERIFY: 근거/규칙 검증
     VERIFY-->>ORCH: 최종 기준별 상태
+    ORCH->>DB: 명확한 OK/NOT_OK 결과 저장
+    ORCH->>D: 애매한 UNKNOWN만 A2A 토론
+    D-->>ORCH: 토론 종료 결과
     ORCH->>Q: 남은 UNKNOWN 보완 질문 후보 생성
     Q-->>ORCH: 검토용 질문 후보 JSON
-    ORCH->>DB: 결과/보고서/A2A 로그 저장
+    ORCH->>DB: 추천 결과/보고서/A2A 로그 저장
     ORCH-->>API: 추천 결과 반환
 ```
 
@@ -584,8 +588,9 @@ sequenceDiagram
 6. Graph RAG에서 기준별 관련 근거를 가져온다.
 7. Bedrock LLM이 기준별 상태를 제안한다.
 8. Verifier가 근거 출처, 날짜, 단위, 기준 연산자를 검증한다.
-9. 앞단 재질문 후에도 남은 `UNKNOWN`은 A2A 토론 또는 사람 검토로 넘긴다.
-10. 결과 JSON과 보고서를 저장한다.
+9. 앞단 재질문 후에도 남은 `UNKNOWN` 중 애매한 기준만 A2A 토론으로 넘긴다.
+10. A2A는 제한 라운드 안에서 종료하고, 토론 결과를 바로 추천 또는 사람 검토에 반영한다.
+11. 결과 JSON과 보고서를 저장한다.
 
 ### 에이전트 Tool 계약
 
@@ -628,7 +633,7 @@ Tool 호출 권한:
 - 제외 기준이 `NOT_OK`이면 해당 임상시험은 제외한다.
 - 부족한 환자정보는 매칭 실행 전에 최대 5개 질문으로 먼저 보완한다.
 - 매칭 이후 남은 `UNKNOWN`은 A2A 토론 또는 사람 검토로 해소한다.
-- A2A 후에도 해결되지 않으면 사람 검토 큐로 보낸다.
+- A2A는 재귀적으로 Verifier를 다시 호출하지 않고, 제한 라운드 후 추천 반영 또는 사람 검토로 종료한다.
 
 ### LLM 판단 방식
 
@@ -701,22 +706,22 @@ Verifier 검증 항목:
 | LLM 제안이 `OK`이고 규칙 검증도 통과 | `OK` |
 | LLM 제안이 `NOT_OK`이고 충돌 근거가 명확 | `NOT_OK` |
 | 근거가 없거나 날짜/단위가 부족 | `UNKNOWN` |
-| LLM 제안과 규칙 결과가 충돌 | `UNKNOWN` 후 A2A |
-| A2A 후에도 합의 불가 | `UNKNOWN` 또는 Human Review |
+| LLM 제안과 규칙 결과가 충돌 | A2A 토론 대상으로 분류 |
+| A2A 합의 가능 | 토론 결과를 추천 점수와 기준 상태에 반영 |
+| A2A 후에도 합의 불가 | Human Review |
 
 ## UNKNOWN 처리 모델
 
 ```mermaid
 flowchart TD
     U["UNKNOWN 발생"] --> C{"원인"}
-    C -->|환자 정보 부족| Q["LLM 질문 생성"]
+    C -->|환자 정보 부족| Q["앞단 질문 누락 확인"]
     C -->|기록 간 충돌| D["A2A 토론"]
     C -->|공고 기준 애매| D
     C -->|표준용어 매핑 불확실| D
-    Q --> A["사용자 추가 설문"]
-    A --> R["재판정"]
+    Q --> H["Human Review 또는 다음 실행"]
     D --> J{"합의 가능?"}
-    J -->|가능| R
+    J -->|가능| R["추천 결과에 반영"]
     J -->|불가능| H["Human Review"]
 ```
 
@@ -734,7 +739,7 @@ flowchart TD
 
 ## A2A 토론 모델
 
-A2A는 여러 역할의 에이전트가 같은 `UNKNOWN` 기준을 다른 관점에서 검토하는 구조다.
+A2A는 여러 역할의 에이전트가 같은 `UNKNOWN` 기준을 다른 관점에서 검토하는 구조다. A2A는 무한 재판정 루프가 아니라 제한된 토론 단계이며, 토론이 끝나면 추천 결과에 반영하거나 Human Review로 종료한다.
 
 | 역할 | 관점 |
 |------|------|
@@ -751,7 +756,7 @@ A2A 결과:
   "debate_id": "debate_001",
   "criterion_id": "exc_pregnancy_001",
   "initial_status": "UNKNOWN",
-  "final_recommendation": "ASK_USER",
+  "final_recommendation": "USE_WITH_UNCERTAINTY",
   "agents": [
     {
       "role": "EvidenceAgent",
@@ -764,9 +769,18 @@ A2A 결과:
       "confidence": 0.91
     }
   ],
-  "question": "현재 임신 중이거나 임신 가능성이 있나요?"
+  "recommendation_action": "추천 결과에는 남기되 해당 기준은 UNKNOWN으로 표시하고 검토 필요로 태깅합니다."
 }
 ```
+
+A2A 종료 규칙:
+
+| 조건 | 종료 처리 |
+|------|-----------|
+| 토론 결과가 `OK` 또는 `NOT_OK`로 합의됨 | 추천 점수와 기준 상태에 반영 |
+| 근거는 부족하지만 치명적 제외 기준은 아님 | `UNKNOWN`으로 남기고 추천 결과에 불확실성 표시 |
+| 제외 기준 가능성이 있는데 근거 부족 | Human Review Queue |
+| 제한 라운드 초과 | Human Review Queue |
 
 ## 최종 추천 결과
 
