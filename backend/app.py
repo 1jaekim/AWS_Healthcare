@@ -27,7 +27,7 @@ alert_email = app.node.try_get_context("alert_email") or os.environ.get("ALERT_E
 # ─── Stack 1: S3 데이터 레이크 ───────────────────────────
 s3_stack = S3DataStack(app, "HealthcareS3Stack", env=env)
 
-# ─── Stack 2: Bedrock + OpenSearch ───────────────────────
+# ─── Stack 2: Bedrock Knowledge Bases GraphRAG ───────────
 bedrock_stack = BedrockKnowledgeBaseStack(
     app,
     "HealthcareBedrockStack",
@@ -45,7 +45,7 @@ observability_stack = ObservabilityStack(
     env=env,
 )
 
-# ─── Stack 4: 메인 (Lambda, Neptune, Step Functions) ────
+# ─── Stack 4: 메인 (Lambda, DynamoDB, Step Functions) ───
 main_stack = MainStack(
     app,
     "HealthcareMainStack",

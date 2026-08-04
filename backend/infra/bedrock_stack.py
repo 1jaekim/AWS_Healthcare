@@ -1,33 +1,20 @@
-"""
-Bedrock Knowledge Bases + OpenSearch Serverless CDK Stack
-──────────────────────────────────────────────────────────
-- OpenSearch Serverless 컬렉션 (Vector + Keyword Index)
-- Bedrock Knowledge Base (S3 rag/ → 임베딩 → OpenSearch)
-- Titan Embed Text v2 모델로 EMR 임베딩 생성
-- 검색 API를 위한 쿼리 Lambda
+"""Amazon Bedrock Knowledge Bases GraphRAG infrastructure.
 
-아키텍처:
-  S3 rag/canonical_notes.jsonl
-    → Bedrock Knowledge Base (자동 동기화)
-    → Amazon Titan Embed Text v2 (임베딩)
-    → OpenSearch Serverless (Vector + Keyword Index)
-    → OpenSearch 쿼리 API (Lambda)
+S3 ``rag/patients/`` documents are embedded and enriched by Bedrock. Bedrock
+stores both vectors and extracted entity relationships in Neptune Analytics.
 """
-from aws_cdk import (
-    Duration,
-    RemovalPolicy,
-    Stack,
-    aws_bedrock as bedrock,
-    aws_iam as iam,
-    aws_lambda as _lambda,
-    aws_opensearchserverless as oss,
-)
+
+from aws_cdk import CfnResource, RemovalPolicy, Stack, aws_iam as iam
 from constructs import Construct
-import json
+
+
+EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
+EMBEDDING_DIMENSIONS = 1024
+DEFAULT_GRAPH_MODEL_ID = "amazon.nova-micro-v1:0"
 
 
 class BedrockKnowledgeBaseStack(Stack):
-    """Bedrock Knowledge Bases + OpenSearch Serverless 스택"""
+    """Bedrock Knowledge Bases + Neptune Analytics managed GraphRAG."""
 
     def __init__(
         self,
@@ -39,188 +26,148 @@ class BedrockKnowledgeBaseStack(Stack):
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
 
-        self.collection_name = "healthcare-emr-vectors"
-        self.index_name = "emr-vectors"
-
-        # ─── OpenSearch Serverless 네트워크 정책 ──────────
-        network_policy = oss.CfnAccessPolicy(
-            self,
-            "NetworkPolicy",
-            name="healthcare-network-policy",
-            type="network",
-            policy=json.dumps([
-                {
-                    "Rules": [
-                        {
-                            "ResourceType": "collection",
-                            "Resource": [f"collection/{self.collection_name}"],
-                        },
-                        {
-                            "ResourceType": "dashboard",
-                            "Resource": [f"collection/{self.collection_name}"],
-                        },
-                    ],
-                    "AllowFromPublic": True,
-                }
-            ]),
+        region = Stack.of(self).region
+        account = Stack.of(self).account
+        embedding_model_arn = (
+            f"arn:aws:bedrock:{region}::foundation-model/{EMBEDDING_MODEL_ID}"
+        )
+        graph_model_id = self.node.try_get_context("graph_construction_model_id")
+        graph_model_id = graph_model_id or DEFAULT_GRAPH_MODEL_ID
+        graph_model_arn = (
+            f"arn:aws:bedrock:{region}::foundation-model/{graph_model_id}"
         )
 
-        # ─── OpenSearch Serverless 암호화 정책 ───────────
-        encryption_policy = oss.CfnSecurityPolicy(
+        # Raw L1 resources keep this stack compatible with the repository's
+        # pinned CDK while using current CloudFormation GraphRAG properties.
+        self.graph = CfnResource(
             self,
-            "EncryptionPolicy",
-            name="healthcare-encryption-policy",
-            type="encryption",
-            policy=json.dumps({
-                "Rules": [
-                    {
-                        "ResourceType": "collection",
-                        "Resource": [f"collection/{self.collection_name}"],
-                    }
-                ],
-                "AWSOwnedKey": True,
-            }),
+            "HealthcareEvidenceGraph",
+            type="AWS::NeptuneGraph::Graph",
+            properties={
+                "GraphName": "healthcare-evidence-graphrag",
+                "ProvisionedMemory": 16,
+                "ReplicaCount": 0,
+                "PublicConnectivity": False,
+                "KmsKeyIdentifier": data_key_arn,
+                "VectorSearchConfiguration": {
+                    "VectorSearchDimension": EMBEDDING_DIMENSIONS,
+                },
+            },
         )
+        self.graph.apply_removal_policy(RemovalPolicy.RETAIN)
+        graph_arn = self.graph.get_att("GraphArn").to_string()
 
-        # ─── OpenSearch Serverless 컬렉션 ────────────────
-        self.collection = oss.CfnCollection(
-            self,
-            "EmrVectorCollection",
-            name=self.collection_name,
-            type="VECTORSEARCH",
-            description="EMR 비식별 데이터 벡터 검색 컬렉션",
-        )
-        self.collection.add_dependency(encryption_policy)
-        self.collection.add_dependency(network_policy)
-
-        # ─── Bedrock Knowledge Base IAM Role ─────────────
         self.kb_role = iam.Role(
             self,
-            "BedrockKBRole",
+            "BedrockGraphRagRole",
             assumed_by=iam.ServicePrincipal("bedrock.amazonaws.com"),
-            description="Bedrock Knowledge Base 실행 역할",
+            description="Bedrock Knowledge Bases GraphRAG execution role",
         )
-
-        # S3 rag/ 경로 읽기 권한
         self.kb_role.add_to_policy(
             iam.PolicyStatement(
                 actions=["s3:GetObject", "s3:ListBucket"],
-                resources=[
-                    data_bucket_arn,
-                    f"{data_bucket_arn}/rag/*",
-                ],
+                resources=[data_bucket_arn, f"{data_bucket_arn}/rag/patients/*"],
             )
         )
-
-        # KMS 복호화 권한
         self.kb_role.add_to_policy(
             iam.PolicyStatement(
                 actions=["kms:Decrypt", "kms:GenerateDataKey"],
                 resources=[data_key_arn],
             )
         )
-
-        # Bedrock 모델 호출 권한 (임베딩)
         self.kb_role.add_to_policy(
             iam.PolicyStatement(
                 actions=["bedrock:InvokeModel"],
-                resources=[
-                    f"arn:aws:bedrock:{Stack.of(self).region}::foundation-model/amazon.titan-embed-text-v2:0"
-                ],
+                resources=[embedding_model_arn, graph_model_arn],
             )
         )
-
-        # OpenSearch Serverless 접근 권한
         self.kb_role.add_to_policy(
             iam.PolicyStatement(
-                actions=["aoss:APIAccessAll"],
-                resources=[
-                    f"arn:aws:aoss:{Stack.of(self).region}:{Stack.of(self).account}:collection/*"
+                actions=[
+                    "neptune-graph:GetGraph",
+                    "neptune-graph:ReadDataViaQuery",
+                    "neptune-graph:WriteDataViaQuery",
+                    "neptune-graph:DeleteDataViaQuery",
                 ],
+                resources=[graph_arn],
             )
         )
 
-        # ─── OpenSearch Serverless 데이터 접근 정책 ──────
-        oss.CfnAccessPolicy(
+        self.knowledge_base = CfnResource(
             self,
-            "DataAccessPolicy",
-            name="healthcare-data-access",
-            type="data",
-            policy=json.dumps([
-                {
-                    "Rules": [
-                        {
-                            "ResourceType": "index",
-                            "Resource": [f"index/{self.collection_name}/*"],
-                            "Permission": [
-                                "aoss:CreateIndex",
-                                "aoss:UpdateIndex",
-                                "aoss:DescribeIndex",
-                                "aoss:ReadDocument",
-                                "aoss:WriteDocument",
-                            ],
+            "PatientEvidenceKnowledgeBase",
+            type="AWS::Bedrock::KnowledgeBase",
+            properties={
+                "Name": "healthcare-patient-evidence-graphrag",
+                "Description": "비식별 환자 근거와 표준문서 GraphRAG",
+                "RoleArn": self.kb_role.role_arn,
+                "KnowledgeBaseConfiguration": {
+                    "Type": "VECTOR",
+                    "VectorKnowledgeBaseConfiguration": {
+                        "EmbeddingModelArn": embedding_model_arn,
+                        "EmbeddingModelConfiguration": {
+                            "BedrockEmbeddingModelConfiguration": {
+                                "Dimensions": EMBEDDING_DIMENSIONS,
+                                "EmbeddingDataType": "FLOAT32",
+                            }
                         },
-                        {
-                            "ResourceType": "collection",
-                            "Resource": [f"collection/{self.collection_name}"],
-                            "Permission": [
-                                "aoss:CreateCollectionItems",
-                                "aoss:DescribeCollectionItems",
-                                "aoss:UpdateCollectionItems",
-                            ],
+                    },
+                },
+                "StorageConfiguration": {
+                    "Type": "NEPTUNE_ANALYTICS",
+                    "NeptuneAnalyticsConfiguration": {
+                        "GraphArn": graph_arn,
+                        "FieldMapping": {
+                            "MetadataField": "metadata",
+                            "TextField": "text",
                         },
-                    ],
-                    "Principal": [self.kb_role.role_arn],
-                }
-            ]),
+                    },
+                },
+            },
         )
+        self.knowledge_base.add_dependency(self.graph)
 
-        # ─── Bedrock Knowledge Base ──────────────────────
-        self.knowledge_base = bedrock.CfnKnowledgeBase(
+        self.data_source = CfnResource(
             self,
-            "EmrKnowledgeBase",
-            name="healthcare-emr-kb",
-            description="비식별 EMR 데이터 기반 Knowledge Base",
-            role_arn=self.kb_role.role_arn,
-            knowledge_base_configuration=bedrock.CfnKnowledgeBase.KnowledgeBaseConfigurationProperty(
-                type="VECTOR",
-                vector_knowledge_base_configuration=bedrock.CfnKnowledgeBase.VectorKnowledgeBaseConfigurationProperty(
-                    embedding_model_arn=f"arn:aws:bedrock:{Stack.of(self).region}::foundation-model/amazon.titan-embed-text-v2:0",
-                ),
-            ),
-            storage_configuration=bedrock.CfnKnowledgeBase.StorageConfigurationProperty(
-                type="OPENSEARCH_SERVERLESS",
-                opensearch_serverless_configuration=bedrock.CfnKnowledgeBase.OpenSearchServerlessConfigurationProperty(
-                    collection_arn=self.collection.attr_arn,
-                    vector_index_name=self.index_name,
-                    field_mapping=bedrock.CfnKnowledgeBase.OpenSearchServerlessFieldMappingProperty(
-                        vector_field="embedding",
-                        text_field="text",
-                        metadata_field="metadata",
-                    ),
-                ),
-            ),
+            "PatientEvidenceDataSource",
+            type="AWS::Bedrock::DataSource",
+            properties={
+                "Name": "patient-evidence-graphrag-source",
+                "Description": "비식별 환자별 Markdown 근거",
+                "KnowledgeBaseId": self.knowledge_base.get_att(
+                    "KnowledgeBaseId"
+                ).to_string(),
+                "DataDeletionPolicy": "DELETE",
+                "DataSourceConfiguration": {
+                    "Type": "S3",
+                    "S3Configuration": {
+                        "BucketArn": data_bucket_arn,
+                        "InclusionPrefixes": ["rag/patients/"],
+                    },
+                },
+                "VectorIngestionConfiguration": {
+                    "ContextEnrichmentConfiguration": {
+                        "Type": "BEDROCK_FOUNDATION_MODEL",
+                        "BedrockFoundationModelConfiguration": {
+                            "ModelArn": graph_model_arn,
+                            "EnrichmentStrategyConfiguration": {
+                                "Method": "CHUNK_ENTITY_EXTRACTION"
+                            },
+                        },
+                    }
+                },
+            },
         )
+        self.data_source.add_dependency(self.knowledge_base)
 
-        # ─── Bedrock Data Source (S3 rag/) ───────────────
-        self.data_source = bedrock.CfnDataSource(
-            self,
-            "EmrDataSource",
-            name="emr-rag-source",
-            knowledge_base_id=self.knowledge_base.attr_knowledge_base_id,
-            data_source_configuration=bedrock.CfnDataSource.DataSourceConfigurationProperty(
-                type="S3",
-                s3_configuration=bedrock.CfnDataSource.S3DataSourceConfigurationProperty(
-                    bucket_arn=data_bucket_arn,
-                    inclusion_prefixes=["rag/"],
-                ),
-            ),
-        )
-
-    def get_collection_endpoint(self) -> str:
-        """OpenSearch Serverless 컬렉션 엔드포인트"""
-        return self.collection.attr_collection_endpoint
+        # Avoid an implicit wildcard account in any future ARN additions.
+        self.account_id = account
 
     def get_knowledge_base_id(self) -> str:
-        """Knowledge Base ID"""
-        return self.knowledge_base.attr_knowledge_base_id
+        return self.knowledge_base.get_att("KnowledgeBaseId").to_string()
+
+    def get_graph_arn(self) -> str:
+        return self.graph.get_att("GraphArn").to_string()
+
+    def get_data_source_id(self) -> str:
+        return self.data_source.get_att("DataSourceId").to_string()

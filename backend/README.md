@@ -9,8 +9,8 @@
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                         데이터 파이프라인 (infra/ + lambdas/)                  │
 │                                                                             │
-│  clinical_notes.jsonl ──▶ Sanitizer ──▶ S3 rag/ ──▶ Bedrock KB ──▶ OpenSearch│
-│  timeline/measurement ──▶ Graph ETL ──▶ S3 graph/ ──▶ Neptune 그래프         │
+│  clinical_notes.jsonl ──▶ Sanitizer ──▶ 환자별 Markdown + metadata            │
+│                                  └────▶ Bedrock KB GraphRAG + Neptune Analytics│
 │  임상시험 공고 PDF ──────▶ Protocol Parser ──▶ DynamoDB Criteria Store        │
 │                                                                             │
 └────────────────────────────────────┬────────────────────────────────────────┘
@@ -20,7 +20,7 @@
 │                      스크리닝 오케스트레이터 API (api/)                        │
 │                                                                             │
 │  환자 x 시험 매칭 요청                                                       │
-│    → 근거 수집 (OpenSearch + Neptune)                                        │
+│    → 근거 수집 (Bedrock Knowledge Bases GraphRAG)                            │
 │    → 기준별 판정 (규칙 + Bedrock FM)                                         │
 │    → 종합 적격성 확정                                                        │
 │    → 근거 패킷 · 확인 질문 · 설명 반환                                        │
@@ -41,19 +41,16 @@ backend/
 │
 ├── infra/                            # AWS CDK 인프라 코드
 │   ├── s3_stack.py                   # S3 데이터 레이크 (KMS 암호화)
-│   ├── bedrock_stack.py              # Bedrock KB + OpenSearch Serverless
+│   ├── bedrock_stack.py              # Bedrock KB GraphRAG + Neptune Analytics
 │   ├── observability_stack.py        # CloudWatch 대시보드/알람/SNS
-│   └── main_stack.py                # Lambda, Neptune, DynamoDB, Step Functions
+│   └── main_stack.py                # Lambda, DynamoDB, Step Functions
 │
 ├── lambdas/                          # 데이터 파이프라인 Lambda
 │   ├── sanitizer/                    # PHI 마스킹 + 판정 문장 제거
-│   ├── graph_etl/                    # CSV → Neptune Node/Edge CSV 변환
-│   ├── neptune_upsert/               # Bulk Load + 증분 Gremlin Upsert
-│   ├── protocol_parser/              # 공고 PDF → 선정/제외 기준 JSON
-│   └── opensearch_query/             # Bedrock KB Retrieve API
+│   └── protocol_parser/              # 공고 PDF → 선정/제외 기준 JSON
 │
 ├── step_functions/                   # 파이프라인 오케스트레이션
-│   ├── emr_pipeline.json             # Sanitizer → GraphETL → Neptune
+│   ├── emr_pipeline.json             # Sanitizer → Bedrock GraphRAG ingestion
 │   └── trials_pipeline.json          # Protocol Parser → SNS 검토 알림
 │
 ├── api/                              # 스크리닝 오케스트레이터 API (FastAPI)
@@ -87,17 +84,17 @@ backend/
 
 | Lambda | 역할 | 입력 → 출력 |
 |--------|------|-------------|
-| Sanitizer | PHI 마스킹 + 판정 문장 제거 | `raw/clinical_notes.jsonl` → `rag/canonical_notes.jsonl` |
-| Graph ETL | Neptune CSV 생성 | `raw/*.csv` → `graph/nodes/`, `graph/edges/` |
-| Neptune Upsert | 그래프 적재 | `graph/*.csv` → Neptune (Bulk Load + Gremlin) |
+| Sanitizer | PHI 마스킹 + HMAC 비식별 키 + 환자별 문서 집계 | `raw/clinical_notes.jsonl` → `rag/patients/*.md` + metadata |
 | Protocol Parser | 공고 구조화 | `trials/*.pdf` → DynamoDB Criteria Store |
-| OpenSearch Query | EMR 검색 | 쿼리 → Bedrock KB Retrieve |
+
+GraphRAG 검색은 FastAPI의 `api/app/tools/evidence_retrieval.py`가 Bedrock KB
+Retrieve API를 직접 호출한다.
 
 ### Step Functions 워크플로우
 
 **EMR Pipeline:**
 ```
-Sanitizer → Graph ETL → Neptune Bulk Load → (상태 폴링) → 완료
+Sanitizer → Bedrock GraphRAG ingestion → (상태 폴링) → 완료
 ```
 
 **Trials Pipeline:**
@@ -157,8 +154,8 @@ FM은 적격성을 결정하지 않습니다. 동일 입력 → 동일 판정 �
 | API Tool | 현재 (로컬 어댑터) | 파이프라인 연결 후 |
 |----------|-------------------|-------------------|
 | `criteria_tool` | CSV | DynamoDB Criteria Store |
-| `evidence_retrieval_tool` | 키워드 검색 | Bedrock KB + OpenSearch |
-| `timeline_graph_tool` | CSV | Amazon Neptune |
+| `evidence_retrieval_tool` | 키워드 검색 | Bedrock Knowledge Bases GraphRAG |
+| `timeline_graph_tool` | CSV | DynamoDB `PatientClinicalEventTable` |
 | `agent/model` | 스텁 | Bedrock Converse API |
 | `persistence/run_store` | 메모리 | DynamoDB |
 
@@ -200,23 +197,22 @@ pytest tests -q
 | 경로 | 용도 | 보안 |
 |------|------|------|
 | `raw/` | 원본 데이터 보존 | KMS 암호화, 90일 후 Glacier |
-| `rag/` | 비식별 EMR (KB 소스) | KMS 암호화 |
-| `graph/` | Neptune CSV | KMS 암호화 |
+| `rag/patients/` | 환자별 비식별 Markdown + metadata | KMS 암호화 |
 | `trials/` | 임상시험 공고 원문 | KMS 암호화 |
 
 ## 배포 스택 순서
 
 1. `HealthcareS3Stack` - S3 데이터 레이크
-2. `HealthcareBedrockStack` - Bedrock KB + OpenSearch
+2. `HealthcareBedrockStack` - Bedrock KB GraphRAG + Neptune Analytics
 3. `HealthcareObservabilityStack` - 모니터링
-4. `HealthcareMainStack` - Lambda, Neptune, Step Functions
+4. `HealthcareMainStack` - Lambda, DynamoDB, Step Functions
 
 ## 담당 구분
 
 | 영역 | 담당 | 상태 |
 |------|------|------|
-| 데이터 전처리 (Sanitizer, Graph ETL) | 파이프라인 | ✅ 완료 |
-| 검색·그래프 (Bedrock KB, OpenSearch, Neptune) | 파이프라인 | ✅ 완료 |
+| 데이터 전처리 (Sanitizer, 환자별 GraphRAG 문서) | 파이프라인 | ✅ 완료 |
+| 검색·그래프 (Bedrock KB GraphRAG, Neptune Analytics) | 파이프라인 | ✅ 완료 |
 | 공고 구조화 (Protocol Parser, DynamoDB) | 파이프라인 | ✅ 완료 |
 | 파이프라인 오케스트레이션 (Step Functions) | 파이프라인 | ✅ 완료 |
 | 관측성 (CloudWatch) | 파이프라인 | ✅ 완료 |

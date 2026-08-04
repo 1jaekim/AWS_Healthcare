@@ -1,5 +1,5 @@
 {
-  "Comment": "EMR 전처리 파이프라인 - Sanitizer + Graph ETL + Neptune 초기 적재",
+  "Comment": "환자정보 전처리 - 비식별화 후 Bedrock Knowledge Bases GraphRAG 동기화",
   "StartAt": "Sanitizer",
   "States": {
     "Sanitizer": {
@@ -15,202 +15,120 @@
       "ResultSelector": {
         "status.$": "$.Payload.status",
         "canonical_output.$": "$.Payload.canonical_output",
+        "patient_documents.$": "$.Payload.patient_documents",
         "output_key.$": "$.Payload.output_key"
       },
       "Retry": [
         {
-          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
-          "IntervalSeconds": 60,
-          "MaxAttempts": 3,
-          "BackoffRate": 2.0
-        },
-        {
-          "ErrorEquals": ["States.TaskFailed"],
-          "IntervalSeconds": 120,
-          "MaxAttempts": 2,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "SanitizerFailed",
-          "ResultPath": "$.error"
-        }
-      ],
-      "Next": "GraphETL"
-    },
-
-    "GraphETL": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Parameters": {
-        "FunctionName": "${GraphETLFunctionArn}",
-        "Payload": {
-          "timeline_key": "raw/timeline.csv",
-          "measurement_key": "raw/measurement.csv",
-          "medication_key": "raw/medication.csv"
-        }
-      },
-      "ResultPath": "$.graph_etl_result",
-      "ResultSelector": {
-        "status.$": "$.Payload.status",
-        "total_patients.$": "$.Payload.total_patients",
-        "output_prefix.$": "$.Payload.output_prefix"
-      },
-      "Retry": [
-        {
-          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
-          "IntervalSeconds": 60,
-          "MaxAttempts": 3,
-          "BackoffRate": 2.0
-        },
-        {
-          "ErrorEquals": ["States.TaskFailed"],
-          "IntervalSeconds": 120,
-          "MaxAttempts": 2,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "GraphETLFailed",
-          "ResultPath": "$.error"
-        }
-      ],
-      "Next": "NeptuneBulkLoad"
-    },
-
-    "NeptuneBulkLoad": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Parameters": {
-        "FunctionName": "${NeptuneUpsertFunctionArn}",
-        "Payload": {
-          "mode": "bulk_load",
-          "source.$": "$.graph_etl_result.output_prefix"
-        }
-      },
-      "ResultPath": "$.bulk_load_result",
-      "ResultSelector": {
-        "status.$": "$.Payload.status",
-        "load_id.$": "$.Payload.load_id"
-      },
-      "Retry": [
-        {
-          "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException"],
-          "IntervalSeconds": 60,
-          "MaxAttempts": 3,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "NeptuneLoadFailed",
-          "ResultPath": "$.error"
-        }
-      ],
-      "Next": "WaitForLoad"
-    },
-
-    "WaitForLoad": {
-      "Type": "Wait",
-      "Seconds": 30,
-      "Next": "CheckLoadStatus"
-    },
-
-    "CheckLoadStatus": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::lambda:invoke",
-      "Parameters": {
-        "FunctionName": "${NeptuneUpsertFunctionArn}",
-        "Payload": {
-          "mode": "check_status",
-          "load_id.$": "$.bulk_load_result.load_id"
-        }
-      },
-      "ResultPath": "$.load_status",
-      "ResultSelector": {
-        "overall_status.$": "$.Payload.load_status.payload.overallStatus.status"
-      },
-      "Retry": [
-        {
-          "ErrorEquals": ["Lambda.ServiceException"],
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException"
+          ],
           "IntervalSeconds": 30,
           "MaxAttempts": 3,
-          "BackoffRate": 1.5
+          "BackoffRate": 2.0
         }
       ],
       "Catch": [
         {
           "ErrorEquals": ["States.ALL"],
-          "Next": "NeptuneLoadFailed",
+          "Next": "PipelineFailedAlert",
           "ResultPath": "$.error"
         }
       ],
-      "Next": "IsLoadComplete"
+      "Next": "StartGraphRagIngestion"
     },
-
-    "IsLoadComplete": {
+    "StartGraphRagIngestion": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:bedrockagent:startIngestionJob",
+      "Parameters": {
+        "KnowledgeBaseId": "${KnowledgeBaseId}",
+        "DataSourceId": "${DataSourceId}",
+        "Description": "환자 비식별 문서 GraphRAG 동기화"
+      },
+      "ResultPath": "$.ingestion_start",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "BedrockAgent.ThrottlingException",
+            "BedrockAgent.ConflictException"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 5,
+          "BackoffRate": 2.0
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "PipelineFailedAlert",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "WaitForGraphRagIngestion"
+    },
+    "WaitForGraphRagIngestion": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "CheckGraphRagIngestion"
+    },
+    "CheckGraphRagIngestion": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::aws-sdk:bedrockagent:getIngestionJob",
+      "Parameters": {
+        "KnowledgeBaseId": "${KnowledgeBaseId}",
+        "DataSourceId": "${DataSourceId}",
+        "IngestionJobId.$": "$.ingestion_start.IngestionJob.IngestionJobId"
+      },
+      "ResultPath": "$.ingestion_status",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "Next": "PipelineFailedAlert",
+          "ResultPath": "$.error"
+        }
+      ],
+      "Next": "IsGraphRagIngestionComplete"
+    },
+    "IsGraphRagIngestionComplete": {
       "Type": "Choice",
       "Choices": [
         {
-          "Variable": "$.load_status.overall_status",
-          "StringEquals": "LOAD_COMPLETED",
+          "Variable": "$.ingestion_status.IngestionJob.Status",
+          "StringEquals": "COMPLETE",
           "Next": "PipelineSuccess"
         },
         {
-          "Variable": "$.load_status.overall_status",
-          "StringEquals": "LOAD_FAILED",
-          "Next": "NeptuneLoadFailed"
+          "Variable": "$.ingestion_status.IngestionJob.Status",
+          "StringEquals": "FAILED",
+          "Next": "PipelineFailedAlert"
+        },
+        {
+          "Variable": "$.ingestion_status.IngestionJob.Status",
+          "StringEquals": "STOPPED",
+          "Next": "PipelineFailedAlert"
         }
       ],
-      "Default": "WaitForLoad"
+      "Default": "WaitForGraphRagIngestion"
     },
-
     "PipelineSuccess": {
       "Type": "Succeed"
     },
-
-    "SanitizerFailed": {
+    "PipelineFailedAlert": {
       "Type": "Task",
       "Resource": "arn:aws:states:::sns:publish",
       "Parameters": {
         "TopicArn": "${AlertTopicArn}",
-        "Subject": "[Healthcare Pipeline] Sanitizer 실패",
-        "Message.$": "States.Format('Sanitizer Lambda 실패. Error: {}', $.error.Cause)"
+        "Subject": "[Healthcare Pipeline] GraphRAG 동기화 실패",
+        "Message.$": "States.Format('환자정보 GraphRAG 파이프라인 실패: {}', $)"
       },
       "Next": "PipelineFailed"
     },
-
-    "GraphETLFailed": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sns:publish",
-      "Parameters": {
-        "TopicArn": "${AlertTopicArn}",
-        "Subject": "[Healthcare Pipeline] Graph ETL 실패",
-        "Message.$": "States.Format('Graph ETL Lambda 실패. Error: {}', $.error.Cause)"
-      },
-      "Next": "PipelineFailed"
-    },
-
-    "NeptuneLoadFailed": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sns:publish",
-      "Parameters": {
-        "TopicArn": "${AlertTopicArn}",
-        "Subject": "[Healthcare Pipeline] Neptune Load 실패",
-        "Message.$": "States.Format('Neptune Bulk Load 실패. Error: {}', $.error.Cause)"
-      },
-      "Next": "PipelineFailed"
-    },
-
     "PipelineFailed": {
       "Type": "Fail",
-      "Cause": "파이프라인 처리 중 오류 발생",
-      "Error": "PipelineExecutionError"
+      "Cause": "환자정보 GraphRAG 파이프라인 처리 중 오류 발생",
+      "Error": "GraphRagPipelineError"
     }
   }
 }
