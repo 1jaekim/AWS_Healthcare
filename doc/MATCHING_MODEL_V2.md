@@ -2,9 +2,9 @@
 
 ## 목적
 
-이 모델은 Medi25에서 가져온 임상시험 모집공고와 사용자의 기본 정보, EHR/EMR, 추가 설문 데이터를 종합해 사용자에게 가장 적합한 임상시험을 추천한다.
+이 모델은 Medi25에서 가져온 임상시험 모집공고와 사용자의 기본 정보, 환자정보 기입, 추가 설문 데이터를 종합해 사용자에게 가장 적합한 임상시험을 추천한다.
 
-최종 결과는 기준별로 `OK`, `NOT_OK`, `UNKNOWN` 세 가지 상태를 반환한다. `UNKNOWN`은 정보가 부족하거나 근거가 애매한 상태이며, LLM 질문 생성과 A2A 토론을 통해 다시 판단한다.
+최종 결과는 기준별로 `OK`, `NOT_OK`, `UNKNOWN` 세 가지 상태를 반환한다. 부족한 정보는 매칭 전체를 실행하기 전에 환자정보 기입 직후 LLM이 최대 5개까지만 먼저 질문해 보완한다. 그래도 남는 `UNKNOWN`은 A2A 토론 또는 사람 검토로 넘긴다.
 
 ## 전체 모델 흐름
 
@@ -27,8 +27,11 @@ flowchart TD
     D --> DBT["공고/기준 DB 저장"]
 
     U --> P["기본 정보 입력"]
-    P --> E["EHR/EMR 또는 직접 입력"]
-    E --> S["비식별화 및 정규화"]
+    P --> E["환자정보 기입<br/>의사 소견서/직접 입력"]
+    E --> BOT["Chatbot JSON 스키마 기록"]
+    BOT --> Q0["LLM 재질문 생성<br/>최대 5개"]
+    Q0 --> BOT
+    BOT --> S["비식별화 및 정규화"]
     S --> CACHE["ElastiCache 임시 저장<br/>TTL 기반 개인정보 보호"]
     CACHE --> J["환자 임상 JSON"]
     J --> DBP["환자 임상 데이터 DB 저장"]
@@ -43,11 +46,7 @@ flowchart TD
     M --> V["Verifier / Rule Aggregator"]
     V --> O["OK / NOT_OK / UNKNOWN"]
 
-    O -->|UNKNOWN| Q["LLM 질문 생성"]
-    Q --> QA["추가 설문"]
-    QA --> J
-
-    O -->|판단 애매| A2A["A2A 에이전트 토론"]
+    O -->|판단 애매/남은 UNKNOWN| A2A["A2A 에이전트 토론"]
     A2A --> V
 
     O --> REC["최적 임상시험 추천"]
@@ -60,13 +59,103 @@ flowchart TD
 
 | 시작 방식 | 트리거 | 목적 |
 |-----------|--------|------|
-| 사용자 시작 | 로그인 후 프로필/EMR 입력 | 특정 사용자에게 맞는 임상시험 추천 |
+| 사용자 시작 | 로그인 후 프로필/환자정보 입력 | 특정 사용자에게 맞는 임상시험 추천 |
 | 운영자 시작 | `Refresh` 버튼 클릭 | Medi25 최신 모집공고 수동 갱신 |
 | 관리자 시작 | 공고 직접 추가/수정 | Medi25에 없거나 누락된 모집공고 등록 |
 | 자동 시작 | EventBridge/Scheduler | 매일 또는 일정 주기로 최신 공고 자동 수집 |
 | 재판정 시작 | 추가 설문 제출 | `UNKNOWN` 기준을 다시 판단 |
 
 초기 화면에서 중요한 버튼은 `Refresh 모집공고`, `공고 추가`, `매칭 시작`이다. `Refresh 모집공고`는 최신 Medi25 데이터를 가져와 DB에 반영하고, `공고 추가`는 관리자가 직접 모집공고를 등록하거나 수정하는 기능이다. `매칭 시작`은 현재 저장된 공고와 사용자 데이터를 기반으로 전체 에이전트 워크플로우를 실행한다.
+
+## Chatbot JSON 기록 모델
+
+사용자 입력은 일반 폼뿐 아니라 Chatbot으로 받을 수 있다. Chatbot은 선택된 공고의 선정/제외 기준을 보면서 환자정보 기입 내용을 JSON 스키마로 기록하고, 부족한 정보는 매칭 실행 전에 LLM이 판단해 재질문을 만든다.
+
+단, 재질문은 한 번의 매칭 실행에서 최대 5개까지만 생성한다.
+
+```mermaid
+flowchart TD
+    A["사용자 로그인"] --> B["관심 임상/질환 선택"]
+    B --> C["후보 공고 기준 조회"]
+    C --> D["환자정보 기입<br/>의사 소견서/직접 입력"]
+    D --> E["Chatbot JSON 스키마 기록"]
+    E --> F["부족한 필드 판단"]
+    F --> G{"부족한 정보 있음?"}
+    G -->|예| H["LLM 재질문 생성<br/>최대 5개"]
+    H --> I["사용자 답변"]
+    I --> E
+    G -->|아니오| J["비식별화 및 정규화"]
+    J --> K["매칭 워크플로우 실행"]
+```
+
+Chatbot 기록 JSON:
+
+```json
+{
+  "run_id": "run_20260804_001",
+  "patient_key": "pt_7f3a",
+  "trial_id": "medi25-10713",
+  "chatbot_intake": {
+    "interest_diseases": ["당뇨병"],
+    "preferred_regions": ["서울", "경기"],
+    "sex": "FEMALE",
+    "birth_year": 1990,
+    "patient_information_source": "DOCTOR_NOTE",
+    "answers": [
+      {
+        "question_id": "q_hba1c_recent",
+        "criterion_id": "inc_hba1c_001",
+        "field": "hba1c",
+        "answer": "최근 검사에서 HbA1c 7.8%였습니다.",
+        "normalized_value": 7.8,
+        "unit": "%",
+        "source": "CHATBOT"
+      }
+    ]
+  }
+}
+```
+
+재질문 생성 정책:
+
+| 항목 | 정책 |
+|------|------|
+| 최대 질문 수 | 한 매칭 실행당 최대 5개 |
+| 질문 대상 | 선택된 공고 기준과 환자정보 스키마에서 누락된 항목 |
+| 질문 방식 | 예/아니오, 날짜, 수치, 단일 선택 위주 |
+| 제외 질문 | 이미 답변한 내용, LLM이 근거 없이 추측한 내용 |
+| 저장 방식 | 답변은 `SURVEY_ANSWER` 또는 정규화 임상 이벤트로 저장 |
+
+재질문 JSON:
+
+```json
+{
+  "run_id": "run_20260804_001",
+  "question_limit": 5,
+  "questions": [
+    {
+      "question_id": "q_pregnancy_001",
+      "criterion_id": "exc_pregnancy_001",
+      "field": "active_pregnancy",
+      "reason": "최근 임신 여부를 확인할 근거가 없습니다.",
+      "question": "현재 임신 중이거나 임신 가능성이 있나요?",
+      "answer_type": "YES_NO",
+      "priority": 1
+    },
+    {
+      "question_id": "q_hba1c_date_001",
+      "criterion_id": "inc_hba1c_001",
+      "field": "hba1c",
+      "reason": "HbA1c 수치는 있으나 검사일이 기준 기간 안인지 불명확합니다.",
+      "question": "가장 최근 HbA1c 검사는 언제 받았나요?",
+      "answer_type": "DATE",
+      "priority": 2
+    }
+  ]
+}
+```
+
+질문 후보가 5개를 넘으면 `priority`가 높은 순서로 5개만 사용자에게 보여주고, 나머지는 다음 실행 또는 Human Review 대상으로 넘긴다.
 
 ## 관리자 공고 추가 모델
 
@@ -166,7 +255,7 @@ flowchart TD
 | 선정/제외 기준 JSON | DynamoDB `TrialCriteriaTable` | 기준 버전 관리 |
 | 기준/공고 임베딩 문서 | S3 `rag/trials/` + Bedrock KB | RAG 검색용 |
 | 수신 개인정보 JSON | ElastiCache for Redis | 워크플로우 처리용 임시 저장, 짧은 TTL 적용 |
-| 환자 원본 EMR | S3 `emr/raw/` | 암호화 저장, LLM 직접 전달 금지 |
+| 환자정보 원문 | S3 `patient/raw/` | 의사 소견서/직접 입력 원문 암호화 저장, LLM 직접 전달 금지 |
 | 비식별 임상 이벤트 | DynamoDB 또는 Neptune | 매칭 판단용 이벤트 |
 | Graph RAG 관계 | Amazon Neptune | 환자-이벤트-기준-표준문서 연결 |
 | 매칭 실행 결과 | DynamoDB `MatchingRunTable` | 실행 이력, 상태, 재실행 |
@@ -187,13 +276,13 @@ flowchart TD
 
 ## 개인정보 JSON 임시 처리 모델
 
-사용자에게서 받은 JSON에는 이름, 성별, 관심 임상, EHR/EMR 연결 정보, 추가 설문 답변처럼 민감한 정보가 섞일 수 있다. 이 데이터는 전체 워크플로우가 빠르게 돌아가도록 Amazon ElastiCache for Redis에 먼저 넘긴다.
+사용자에게서 받은 JSON에는 이름, 성별, 관심 임상, 의사 소견서, 추가 설문 답변처럼 민감한 정보가 섞일 수 있다. 이 데이터는 전체 워크플로우가 빠르게 돌아가도록 Amazon ElastiCache for Redis에 먼저 넘긴다.
 
 ElastiCache는 임시 처리 계층으로 사용한다. 영구 보관이 필요한 값은 비식별화와 정규화를 거친 뒤 DynamoDB, S3, Neptune에 목적별로 나누어 저장한다.
 
 ```mermaid
 flowchart TD
-    IN["사용자/EMR JSON 수신"] --> VALID["스키마 검증"]
+    IN["사용자/환자정보 JSON 수신"] --> VALID["스키마 검증"]
     VALID --> ENC["전송 구간 암호화"]
     ENC --> REDIS["ElastiCache Redis<br/>session:{run_id}"]
     REDIS --> NORM["비식별화 및 임상 이벤트 정규화"]
@@ -229,7 +318,7 @@ ElastiCache 사용 원칙:
     "birth_year": 1990,
     "interests": ["당뇨병", "디지털치료제"]
   },
-  "emr_payload_ref": "upload://emr/session_abc",
+  "patient_information_ref": "upload://doctor-note/session_abc",
   "answers": [
     {
       "question_id": "q_pregnancy_001",
@@ -243,7 +332,7 @@ ElastiCache에 들어가는 값은 다음 단계에서 바로 분리된다.
 
 - `name`, 연락처, 계정 식별자: PII 저장소 또는 계정 DB
 - `sex`, `birth_year`, 관심 임상: 사용자 프로필 DB
-- EHR/EMR 본문: S3 raw 영역에 암호화 저장
+- 의사 소견서/환자정보 원문: S3 raw 영역에 암호화 저장
 - 비식별 임상 이벤트: DynamoDB/Neptune/RAG
 - 추가 설문 답변: `SURVEY_ANSWER` 이벤트로 정규화
 
@@ -286,15 +375,15 @@ Medi25에서 임상시험 모집공고를 가져온 뒤 표준 JSON으로 변환
     "trial_types": ["약물", "디지털치료제"],
     "regions": ["서울", "경기"]
   },
-  "ehr_emr_connected": true
+    "patient_information_source": "DOCTOR_NOTE"
 }
 ```
 
 이름 같은 직접 식별자는 LLM이나 RAG에 넣지 않는다. LLM에는 `patient_key`처럼 비식별 키만 전달한다.
 
-### 3. EHR/EMR 정규화 데이터
+### 3. 환자정보 정규화 데이터
 
-EHR/EMR, 사용자가 직접 입력한 건강 정보, 추가 설문 답변은 모두 같은 임상 이벤트 JSON으로 정규화한다.
+의사 소견서, 사용자가 직접 입력한 건강 정보, 추가 설문 답변은 모두 같은 임상 이벤트 JSON으로 정규화한다.
 
 ```json
 {
@@ -305,7 +394,7 @@ EHR/EMR, 사용자가 직접 입력한 건강 정보, 추가 설문 답변은 �
   "unit": "%",
   "observed_at": "2026-07-20",
   "source": {
-    "type": "EMR",
+    "type": "DOCTOR_NOTE",
     "document_id": "note_20260720_01",
     "span": "HbA1c 7.8%"
   },
@@ -371,7 +460,7 @@ EHR/EMR, 사용자가 직접 입력한 건강 정보, 추가 설문 답변은 �
 역할:
 
 - 로그인한 사용자의 기본 정보와 관심 임상을 저장한다.
-- EHR/EMR 연결 여부를 관리한다.
+- 환자정보 입력 방식과 원문 참조를 관리한다.
 - 직접 식별 정보와 임상 판단용 정보를 분리한다.
 
 핵심 원칙:
@@ -384,7 +473,7 @@ EHR/EMR, 사용자가 직접 입력한 건강 정보, 추가 설문 답변은 �
 
 역할:
 
-- EHR/EMR 기록을 진단, 검사, 약물, 시술, 상태, 이상반응 이벤트로 변환한다.
+- 의사 소견서와 환자정보 입력을 진단, 검사, 약물, 시술, 상태, 이상반응 이벤트로 변환한다.
 - 사용자의 직접 입력과 추가 설문 답변도 같은 이벤트 모델로 합친다.
 - 날짜, 단위, 코드, 부정 표현은 규칙 기반으로 검증한다.
 - 자유서술에서 필요한 후보 정보는 LLM이 추출한다.
@@ -414,7 +503,7 @@ RAG는 그래프 기반으로 구축한다. 단순 문서 검색이 아니라 �
 | `Trial` | Medi25 임상시험 공고 |
 | `Criterion` | 선정/제외 기준 |
 | `StandardConcept` | ICD, LOINC, ATC, 내부 용어 |
-| `EvidenceDocument` | EMR 문장, 공고 원문, 표준문서 chunk |
+| `EvidenceDocument` | 의사 소견서 문장, 공고 원문, 표준문서 chunk |
 
 그래프 관계:
 
@@ -445,8 +534,8 @@ RAG는 그래프 기반으로 구축한다. 단순 문서 검색이 아니라 �
 | `NoticeAgent` | Medi25 공고 API/크롤러 결과 조회 |
 | `CriteriaAgent` | 공고 기준 해석 |
 | `RagAgent` | Graph RAG와 표준문서 검색 |
-| `MedicalRecordAgent` | EHR/EMR 근거 판단 |
-| `QuestionAgent` | 부족한 정보에 대한 질문 생성 |
+| `MedicalRecordAgent` | 환자정보/의사 소견서 근거 판단 |
+| `QuestionAgent` | 부족한 정보에 대한 질문 생성, 최대 5개 제한 |
 | `DebateAgent` | `UNKNOWN` 기준에 대해 A2A 토론 |
 | `VerifierAgent` | 모델 판단 검증 및 최종 상태 확정 |
 
@@ -461,7 +550,7 @@ sequenceDiagram
     participant ORCH as OrchestratorAgent
     participant NOTICE as NoticeAgent
     participant RAG as RagAgent
-    participant EMR as MedicalRecordAgent
+    participant RECORD as MedicalRecordAgent
     participant LLM as Bedrock LLM
     participant VERIFY as VerifierAgent
     participant Q as QuestionAgent
@@ -471,16 +560,16 @@ sequenceDiagram
     API->>ORCH: run_id 생성 및 실행 요청
     ORCH->>NOTICE: 최신 공고/기준 조회
     NOTICE->>DB: TrialNotice/Criteria 조회
-    ORCH->>EMR: 환자 임상 이벤트 조회
-    EMR->>DB: PatientClinicalEvent 조회
+    ORCH->>RECORD: 환자 임상 이벤트 조회
+    RECORD->>DB: PatientClinicalEvent 조회
     ORCH->>RAG: 기준별 근거 검색
     RAG->>DB: Bedrock KB/OpenSearch/Neptune 조회
     ORCH->>LLM: 기준별 판단 요청
     LLM-->>ORCH: OK/NOT_OK/UNKNOWN 제안 JSON
     ORCH->>VERIFY: 근거/규칙 검증
     VERIFY-->>ORCH: 최종 기준별 상태
-    ORCH->>Q: UNKNOWN 기준 질문 생성 요청
-    Q-->>ORCH: 추가 설문 JSON
+    ORCH->>Q: 남은 UNKNOWN 보완 질문 후보 생성
+    Q-->>ORCH: 검토용 질문 후보 JSON
     ORCH->>DB: 결과/보고서/A2A 로그 저장
     ORCH-->>API: 추천 결과 반환
 ```
@@ -491,11 +580,11 @@ sequenceDiagram
 2. Medi25 공고 DB에서 최신 모집공고와 기준 버전을 가져온다.
 3. 사용자의 관심 질환, 지역, 성별, 나이로 1차 후보를 좁힌다.
 4. 후보 임상시험별 선정/제외 기준을 불러온다.
-5. 환자 임상 이벤트와 EMR 근거를 조회한다.
+5. 환자 임상 이벤트와 의사 소견서 근거를 조회한다.
 6. Graph RAG에서 기준별 관련 근거를 가져온다.
 7. Bedrock LLM이 기준별 상태를 제안한다.
 8. Verifier가 근거 출처, 날짜, 단위, 기준 연산자를 검증한다.
-9. `UNKNOWN`은 질문 생성 또는 A2A 토론으로 넘긴다.
+9. 앞단 재질문 후에도 남은 `UNKNOWN`은 A2A 토론 또는 사람 검토로 넘긴다.
 10. 결과 JSON과 보고서를 저장한다.
 
 ### 에이전트 Tool 계약
@@ -511,13 +600,15 @@ LLM이 직접 DB를 읽는 것이 아니라, 허용된 Tool을 통해서만 근�
 | `query_timeline_graph` | `patient_key`, `field`, `time_window` | 구조화 임상 이벤트 |
 | `evaluate_rule` | `criterion`, `observations` | 규칙 기반 판정 |
 | `save_matching_report` | `run_id`, `result_json` | 보고서 저장 위치 |
+| `record_chatbot_schema` | `run_id`, `chat_messages` | 정규화된 사용자 JSON |
+| `generate_intake_questions` | `run_id`, `candidate_criteria`, `limit=5` | 환자정보 기입 직후 최대 5개 재질문 |
 
 Tool 호출 권한:
 
 - `NoticeAgent`: 공고 API와 공고 DB만 접근한다.
 - `RagAgent`: RAG/Graph 검색만 접근한다.
 - `MedicalRecordAgent`: 비식별 환자 임상 이벤트만 접근한다.
-- `QuestionAgent`: 기준별 `UNKNOWN` 결과와 사용자 프로필 일부만 접근한다.
+- `QuestionAgent`: 환자정보 기입 직후 부족 필드와 사용자 프로필 일부만 접근하고, 질문은 최대 5개만 생성한다.
 - `VerifierAgent`: 모든 근거 번들을 읽을 수 있지만 원본 개인정보는 읽지 않는다.
 
 ## 7. 판단 모델
@@ -535,7 +626,8 @@ Tool 호출 권한:
 - 선정 기준이 `OK`이면 통과 후보로 본다.
 - 선정 기준이 `NOT_OK`이면 추천 점수를 크게 낮추거나 제외한다.
 - 제외 기준이 `NOT_OK`이면 해당 임상시험은 제외한다.
-- `UNKNOWN`은 추가 질문 또는 A2A 토론으로 해소한다.
+- 부족한 환자정보는 매칭 실행 전에 최대 5개 질문으로 먼저 보완한다.
+- 매칭 이후 남은 `UNKNOWN`은 A2A 토론 또는 사람 검토로 해소한다.
 - A2A 후에도 해결되지 않으면 사람 검토 큐로 보낸다.
 
 ### LLM 판단 방식
@@ -564,8 +656,8 @@ LLM 입력:
   },
   "evidence": [
     {
-      "evidence_id": "emr.note_20260720_01",
-      "source_type": "EMR",
+      "evidence_id": "patient.note_20260720_01",
+      "source_type": "DOCTOR_NOTE",
       "observed_at": "2026-07-20",
       "text": "HbA1c 7.8%",
       "structured_value": 7.8,
@@ -584,7 +676,7 @@ LLM 출력:
   "proposed_status": "OK",
   "confidence": 0.91,
   "reason": "최근 180일 이내 HbA1c 7.8% 근거가 있어 기준을 충족합니다.",
-  "used_evidence_ids": ["emr.note_20260720_01"],
+  "used_evidence_ids": ["patient.note_20260720_01"],
   "missing_information": [],
   "needs_a2a": false
 }
@@ -699,7 +791,7 @@ A2A 결과:
           "criterion_id": "inc_hba1c_001",
           "status": "OK",
           "reason": "최근 HbA1c 7.8%가 확인되었습니다.",
-          "evidence_ids": ["emr.note_20260720_01"]
+          "evidence_ids": ["patient.note_20260720_01"]
         },
         {
           "criterion_id": "exc_pregnancy_001",
@@ -718,7 +810,7 @@ A2A 결과:
 | 기능 | Bedrock 사용 |
 |------|--------------|
 | 공고 기준 추출 | Bedrock Converse API |
-| EMR 자유서술 해석 | Bedrock Converse API |
+| 환자정보/의사 소견서 자유서술 해석 | Bedrock Converse API |
 | 질문 생성 | Bedrock Converse API |
 | RAG 검색 | Bedrock Knowledge Bases |
 | 임베딩 | Amazon Titan Embeddings |
@@ -729,7 +821,7 @@ A2A 결과:
 
 1. Medi25 공고 JSON 스키마 확정
 2. 사용자 프로필 JSON 스키마 확정
-3. EHR/EMR 임상 이벤트 JSON 스키마 확정
+3. 환자정보 임상 이벤트 JSON 스키마 확정
 4. 임상시험 기준 JSON 스키마 확정
 5. `OK`, `NOT_OK`, `UNKNOWN` 판정 규칙 정의
 6. Graph RAG 노드/엣지 모델 정의
