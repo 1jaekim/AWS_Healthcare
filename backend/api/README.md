@@ -60,6 +60,11 @@ COGNITO_CLIENT_ID=xxxxxxxxxxxxxxxxxxxxxxxxxx
 AUTH_REQUIRED=true
 ```
 
+2026-08-04 기준 배포된 값은 `ap-northeast-2_M9srfkUaM` / 클라이언트
+`12tvibdc3s1lc7f5ep4c5h0dko` 입니다 (서울 리전). 둘 다 비밀이 아니며 프론트 번들에도
+포함됩니다. 로컬 실행용 값은 `backend/api/.env` 에 있고 이 파일은 git 에 올리지
+않습니다.
+
 검증 항목은 서명(User Pool JWKS, RS256), `iss`, `exp`/`iat`, `token_use`
 (`id` 또는 `access`), 그리고 대상입니다. 대상은 ID 토큰이면 `aud`, Access 토큰이면
 `client_id` 를 봅니다. Cognito 가 토큰 종류에 따라 대상을 다른 클레임에 넣기 때문에

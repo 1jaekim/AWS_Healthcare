@@ -229,7 +229,52 @@ aws-amplify 가 통째로 트리셰이킹됩니다.
 
 ## 배포
 
-### Amplify Hosting
+### 현재 배포 상태 (2026-08-04)
+
+| 항목 | 값 |
+|---|---|
+| URL | https://backend-dev-integration.d2n974jp53i37s.amplifyapp.com |
+| Amplify 앱 | `trial-matching-web` (`d2n974jp53i37s`, ap-northeast-2) |
+| 브랜치 | `backend-dev-integration` (수동 배포) |
+| 인증 | 실제 Cognito (`ap-northeast-2_M9srfkUaM`) |
+| 데이터 | 목업 (`VITE_USE_MOCK=true`) |
+
+로그인·회원가입·이메일 인증은 실제 Cognito를 씁니다. 로그인 이후 화면 데이터는
+목업입니다. 백엔드가 `outputs/longitudinal_emr_v2/` 데이터셋을 읽는데 그 폴더가 없어
+uvicorn이 기동되지 않고, API를 올릴 스택도 아직 없습니다. 데이터셋과 API 배포가
+준비되면 `VITE_USE_MOCK=false` + `VITE_API_BASE_URL` 로 바꿔 재배포합니다.
+
+### 수동 배포 (Git 연결 없이)
+
+저장소를 Amplify에 연결하지 않고 빌드 산출물만 올리는 경로입니다. 위 배포도 이
+방식으로 했습니다.
+
+```bash
+cd frontend && npm run build
+cd dist && zip -qr /tmp/frontend-dist.zip .
+
+APP=d2n974jp53i37s
+BRANCH=backend-dev-integration
+aws amplify create-deployment --app-id $APP --branch-name $BRANCH \
+  --region ap-northeast-2 > /tmp/deploy.json
+# jobId 와 zipUploadUrl 을 꺼내서
+curl -X PUT -T /tmp/frontend-dist.zip "<zipUploadUrl>"
+aws amplify start-deployment --app-id $APP --branch-name $BRANCH \
+  --job-id <jobId> --region ap-northeast-2
+```
+
+Vite는 `VITE_*` 값을 빌드 시점에 굽습니다. 이 방식은 로컬 `.env` 값이 그대로
+번들에 들어가므로, 배포 전에 `frontend/.env` 가 배포 대상 설정인지 확인해야 합니다.
+
+SPA rewrite 규칙은 앱 생성 시 함께 등록했습니다. 이게 없으면 `/results/...`
+딥링크가 404가 됩니다.
+
+```bash
+aws amplify get-app --app-id d2n974jp53i37s --region ap-northeast-2 \
+  --query "app.customRules"
+```
+
+### Amplify Hosting (Git 연결)
 
 저장소 루트의 `amplify.yml` 이 모노레포 형식으로 `frontend` 를 앱 루트로 가리킵니다.
 

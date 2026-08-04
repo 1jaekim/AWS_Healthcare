@@ -7,9 +7,15 @@
 # 환경 변수(VITE_*)는 Amplify 콘솔 > 환경 변수에 등록한다. Vite 는 빌드 시점에
 # 값을 번들에 굽기 때문에, 값을 바꾸면 반드시 재배포해야 반영된다.
 #
-#   VITE_API_BASE_URL   백엔드 FastAPI 주소 (예: https://api.example.com)
-#   VITE_USE_MOCK       백엔드 배포 전이면 true, 붙일 준비가 되면 false
-#   VITE_DEMO_PERSON_ID 데모 계정이 바인딩될 person_id
+#   VITE_API_BASE_URL          백엔드 FastAPI 주소 (예: https://api.example.com)
+#   VITE_USE_MOCK              백엔드 배포 전이면 true, 붙일 준비가 되면 false
+#   VITE_DEMO_PERSON_ID        데모 계정이 바인딩될 person_id
+#   VITE_AUTH_PROVIDER         cognito 또는 local
+#   VITE_COGNITO_USER_POOL_ID  cdk deploy HealthcareAuthStack 의 UserPoolId
+#   VITE_COGNITO_CLIENT_ID     같은 스택의 UserPoolClientId
+#
+# VITE_AUTH_PROVIDER=cognito 인데 User Pool 값이 비어 있으면 앱이 즉시 실패한다.
+# 진짜 인증인 줄 알고 배포하는 상황을 만들지 않기 위한 것이다.
 
 version: 1
 applications:
