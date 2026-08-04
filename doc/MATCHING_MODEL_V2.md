@@ -4,7 +4,7 @@
 
 이 모델은 Medi25에서 가져온 임상시험 모집공고와 사용자의 기본 정보, 환자정보 기입, 추가 설문 데이터를 종합해 사용자에게 가장 적합한 임상시험을 추천한다.
 
-최종 결과는 기준별로 `OK`, `NOT_OK`, `UNKNOWN` 세 가지 상태를 반환한다. 부족한 정보는 매칭 전체를 실행하기 전에 환자정보 기입 직후 LLM이 최대 5개까지만 먼저 질문해 보완한다. 그래도 남는 `UNKNOWN`은 A2A 토론 또는 사람 검토로 넘긴다.
+최종 결과는 기준별로 `OK`, `NOT_OK`, `UNKNOWN` 세 가지 상태를 반환한다. 사용자가 선택한 공고에는 공통 지원 스키마를 먼저 적용하고, LLM이 공고별 필드를 추가한다. 자연어 지원서에서 누락된 필드는 최대 5회까지 다시 질문해 완성 JSON을 만든다. 완성 JSON은 기존 환자 기록과 연결되어 GraphRAG/Timeline 조회와 오케스트레이터 판정에 사용된다. 그래도 남는 `UNKNOWN`은 A2A 토론 또는 사람 검토로 넘긴다.
 
 ## 전체 모델 흐름
 
@@ -26,19 +26,23 @@ flowchart TD
     C --> D["임상시험 기준 JSON"]
     D --> DBT["공고/기준 DB 저장<br/>판정 Source of Truth"]
 
-    U --> P["기본 정보 입력"]
-    P --> E["환자정보 기입<br/>의사 소견서/직접 입력"]
-    E --> BOT["Chatbot JSON 스키마 기록"]
-    BOT --> Q0["LLM 재질문 생성<br/>최대 5개"]
+    U --> SELECT["참여할 임상시험 선택"]
+    SELECT --> BASE["공통 지원 스키마<br/>나이/성별/질환/약/알레르기/과거 참여"]
+    D --> EXT["공고별 추가 필드 생성"]
+    BASE --> SCHEMA["버전 고정 지원 JSON Schema"]
+    EXT --> SCHEMA
+    SCHEMA --> E["자연어 지원서 작성"]
+    E --> BOT["LLM JSON 값 추출<br/>백엔드 메모리 변수에 병합"]
+    BOT --> MISS{"누락 필드 있음?"}
+    MISS -->|예, 5회 미만| Q0["누락 필드만 재질문"]
     Q0 --> BOT
-    BOT --> S["비식별화 및 정규화"]
-    S --> CACHE["ElastiCache 임시 저장<br/>TTL 기반 개인정보 보호"]
-    CACHE --> J["환자 임상 JSON"]
-    J --> DBP["환자 임상 데이터 DB 저장"]
+    MISS -->|예, 5회 도달| LIMIT["MAX_FOLLOW_UPS_REACHED"]
+    MISS -->|아니오| J["COMPLETE<br/>완성된 환자 임상 JSON"]
+    J --> LINK["person_id로 기존 환자 기록 연결"]
 
     DBT --> AG["Agent Orchestrator"]
-    DBP --> R
-    J --> R
+    LINK --> AG
+    LINK --> R
     STD["표준문서/용어집/코드체계"] --> R
 
     R["환자근거/표준문서 Graph RAG"] --> AG
@@ -78,52 +82,60 @@ flowchart TD
 - RAG/Graph는 공고 기준 원본 저장소가 아니다. 환자 근거, 표준문서, 용어 매핑, 과거 판단 근거를 찾는 보조 계층으로 사용한다.
 - 기준 추출 JSON이 불완전하면 런타임에서 Long Context로 다시 판단하지 않고 `PENDING_REVIEW` 또는 `NEEDS_FIX`로 보내 관리자 검토 후 활성화한다.
 
-## Chatbot JSON 기록 모델
+## 공고 기반 자연어 지원서 모델
 
-사용자 입력은 일반 폼뿐 아니라 Chatbot으로 받을 수 있다. Chatbot은 선택된 공고의 선정/제외 기준을 보면서 환자정보 기입 내용을 JSON 스키마로 기록하고, 부족한 정보는 매칭 실행 전에 LLM이 판단해 재질문을 만든다.
+지원서 수집은 판정과 분리한다. 먼저 모든 공고에 적용되는 기본 스키마를 만들고, 선택한 공고에서 지원자가 직접 답해야 하는 항목만 LLM이 추가한다. 그다음 사용자의 자연어 지원서에서 스키마 값을 추출한다. 응답하지 않은 값은 누락으로 유지하며, `없음`이라고 명시한 배열형 항목은 유효한 빈 배열 `[]`로 기록한다.
 
-단, 재질문은 한 번의 매칭 실행에서 최대 5개까지만 생성한다.
+누락 항목이 있으면 해당 항목만 다시 작성하도록 요청한다. 추가 답변은 기존 메모리 변수에 병합하며, 재질문은 최대 5회까지만 발행한다. 모든 필드가 채워지면 `COMPLETE` 상태의 JSON을 반환한다.
 
 ```mermaid
 flowchart TD
-    A["사용자 로그인"] --> B["관심 임상/질환 선택"]
-    B --> C["후보 공고 기준 조회"]
-    C --> D["환자정보 기입<br/>의사 소견서/직접 입력"]
-    D --> E["Chatbot JSON 스키마 기록"]
-    E --> F["부족한 필드 판단"]
+    A["사용자 로그인"] --> B["참여할 임상시험 선택"]
+    B --> C["공통 지원 스키마 로드"]
+    C --> D["공고문에서 추가 필드 생성"]
+    D --> E["자연어 지원서에서 JSON 값 추출"]
+    E --> F["누락 필드 검사"]
     F --> G{"부족한 정보 있음?"}
-    G -->|예| H["LLM 재질문 생성<br/>최대 5개"]
-    H --> I["사용자 답변"]
+    G -->|예, 5회 미만| H["누락 필드만 재질문"]
+    H --> I["추가 자연어 답변"]
     I --> E
-    G -->|아니오| J["비식별화 및 정규화"]
-    J --> K["매칭 워크플로우 실행"]
+    G -->|예, 5회 도달| X["MAX_FOLLOW_UPS_REACHED"]
+    G -->|아니오| J["COMPLETE JSON"]
+    J --> K["person_id로 환자 기록 연결"]
+    K --> L["GraphRAG/Timeline + Orchestrator 실행"]
 ```
 
-Chatbot 기록 JSON:
+공통 필수 필드는 다음과 같다.
+
+| 필드 | 타입 | 병합 방식 |
+|------|------|-----------|
+| `age` | integer | 최신 명확한 답변으로 교체 |
+| `sex` | string | 최신 명확한 답변으로 교체 |
+| `diagnosed_conditions` | array | 누적 후 중복 제거, `없음`은 `[]` |
+| `current_medications` | array | 누적 후 중복 제거, `없음`은 `[]` |
+| `allergies` | array | 누적 후 중복 제거, `없음`은 `[]` |
+| `prior_trial_participation` | boolean | `false`도 응답 완료로 인정 |
+
+완성 지원서 JSON 예시:
 
 ```json
 {
-  "run_id": "run_20260804_001",
-  "patient_key": "pt_7f3a",
+  "application_id": "APP-a17f...",
+  "schema_id": "APP-SCHEMA-medi25-10713-a93c...",
   "trial_id": "medi25-10713",
-  "chatbot_intake": {
-    "interest_diseases": ["당뇨병"],
-    "preferred_regions": ["서울", "경기"],
-    "sex": "FEMALE",
-    "birth_year": 1990,
-    "patient_information_source": "DOCTOR_NOTE",
-    "answers": [
-      {
-        "question_id": "q_hba1c_recent",
-        "criterion_id": "inc_hba1c_001",
-        "field": "hba1c",
-        "answer": "최근 검사에서 HbA1c 7.8%였습니다.",
-        "normalized_value": 7.8,
-        "unit": "%",
-        "source": "CHATBOT"
-      }
-    ]
-  }
+  "status": "COMPLETE",
+  "data": {
+    "age": 36,
+    "sex": "female",
+    "diagnosed_conditions": ["제2형 당뇨병"],
+    "current_medications": ["메트포르민"],
+    "allergies": [],
+    "prior_trial_participation": false,
+    "latest_hba1c": 7.8
+  },
+  "missing_fields": [],
+  "follow_up_count": 2,
+  "max_follow_ups": 5
 }
 ```
 
@@ -131,42 +143,34 @@ Chatbot 기록 JSON:
 
 | 항목 | 정책 |
 |------|------|
-| 최대 질문 수 | 한 매칭 실행당 최대 5개 |
-| 질문 대상 | 선택된 공고 기준과 환자정보 스키마에서 누락된 항목 |
-| 질문 방식 | 예/아니오, 날짜, 수치, 단일 선택 위주 |
+| 최대 재질문 횟수 | 지원서 세션당 최대 5회 |
+| 질문 대상 | 현재 JSON Schema에서 값이 누락된 필드만 |
+| 질문 방식 | 누락 필드의 제목과 설명을 포함한 추가 작성 요청 |
 | 제외 질문 | 이미 답변한 내용, LLM이 근거 없이 추측한 내용 |
-| 저장 방식 | 답변은 `SURVEY_ANSWER` 또는 정규화 임상 이벤트로 저장 |
+| 병합 방식 | 단일값은 최신 답변, 배열은 누적·중복 제거 |
+| 종료 상태 | `COMPLETE` 또는 `MAX_FOLLOW_UPS_REACHED` |
+| 보관 방식 | 현재 프로세스의 `IntakeStore` 메모리 변수에 유지 |
 
 재질문 JSON:
 
 ```json
 {
-  "run_id": "run_20260804_001",
-  "question_limit": 5,
-  "questions": [
+  "status": "NEEDS_MORE_INFO",
+  "missing_fields": [
     {
-      "question_id": "q_pregnancy_001",
-      "criterion_id": "exc_pregnancy_001",
-      "field": "active_pregnancy",
-      "reason": "최근 임신 여부를 확인할 근거가 없습니다.",
-      "question": "현재 임신 중이거나 임신 가능성이 있나요?",
-      "answer_type": "YES_NO",
-      "priority": 1
-    },
-    {
-      "question_id": "q_hba1c_date_001",
-      "criterion_id": "inc_hba1c_001",
-      "field": "hba1c",
-      "reason": "HbA1c 수치는 있으나 검사일이 기준 기간 안인지 불명확합니다.",
-      "question": "가장 최근 HbA1c 검사는 언제 받았나요?",
-      "answer_type": "DATE",
-      "priority": 2
+      "name": "latest_hba1c",
+      "title": "최근 HbA1c",
+      "description": "가장 최근 HbA1c 검사 결과",
+      "type": "number"
     }
-  ]
+  ],
+  "follow_up_prompt": "지원서에서 다음 내용이 확인되지 않았습니다: 최근 HbA1c. 해당 내용을 추가로 작성해 주세요.",
+  "follow_up_count": 1,
+  "max_follow_ups": 5
 }
 ```
 
-질문 후보가 5개를 넘으면 `priority`가 높은 순서로 5개만 사용자에게 보여주고, 나머지는 다음 실행 또는 Human Review 대상으로 넘긴다.
+한 번의 재질문에는 현재 누락된 필드가 함께 포함된다. 다섯 번째 추가 답변 이후에도 누락이 남으면 `MAX_FOLLOW_UPS_REACHED`로 종료하며 더 이상 질문을 발행하지 않는다.
 
 ## 관리자 공고 추가 모델
 
@@ -265,9 +269,9 @@ flowchart TD
 | 공고 정규화 JSON | DynamoDB `TrialNoticeTable` | 목록 조회, 검색, 상태 관리 |
 | 선정/제외 기준 JSON | DynamoDB `TrialCriteriaTable` | 기준 버전 관리, 판정 Source of Truth |
 | 표준문서/비식별 근거 문서 | S3 `rag/` + Bedrock KB GraphRAG | 환자 근거와 표준문서 검색용 |
-| 수신 개인정보 JSON | ElastiCache for Redis | 워크플로우 처리용 임시 저장, 짧은 TTL 적용 |
-| 환자정보 원문 | S3 `patient/raw/` | 의사 소견서/직접 입력 원문 암호화 저장, LLM 직접 전달 금지 |
-| 비식별 임상 이벤트 | DynamoDB `PatientClinicalEventTable` | 정확한 수치·기간 판정용 이벤트 |
+| 지원서 스키마/작성 상태 | 백엔드 메모리 `IntakeStore` | 현재 프로세스에서 스키마와 추가 답변 병합 상태 유지 |
+| 완성 지원서 JSON | 백엔드 메모리 변수 | 오케스트레이터 전달 후에도 현재 프로세스에서 유지 |
+| 기존 환자 임상 이벤트 | 환자 임상 데이터 저장소 | 정확한 수치·기간 판정용 기존 기록 |
 | GraphRAG 관계/벡터 | Bedrock Knowledge Bases + Neptune Analytics | 문서 엔티티·관계 기반 근거 검색 |
 | 매칭 실행 결과 | DynamoDB `MatchingRunTable` | 실행 이력, 상태, 재실행 |
 | 최종 보고서 | S3 `reports/` + DynamoDB 메타데이터 | 사용자/관리자 조회용 |
@@ -285,67 +289,47 @@ flowchart TD
 | `MatchingRunTable` | `run_id` | 매칭 실행 단위 |
 | `MatchingReportTable` | `report_id` | 최종 보고서 메타데이터 |
 
-## 개인정보 JSON 임시 처리 모델
+## 지원서 JSON 메모리 처리 모델
 
-사용자에게서 받은 JSON에는 이름, 성별, 관심 임상, 의사 소견서, 추가 설문 답변처럼 민감한 정보가 섞일 수 있다. 이 데이터는 전체 워크플로우가 빠르게 돌아가도록 Amazon ElastiCache for Redis에 먼저 넘긴다.
-
-ElastiCache는 임시 처리 계층으로 사용한다. 영구 보관이 필요한 값은 비식별화와 정규화를 거친 뒤 DynamoDB, S3, Bedrock Knowledge Bases GraphRAG에 목적별로 나누어 저장한다.
+현재 구현은 ElastiCache나 별도 TTL 계층을 사용하지 않는다. 지원 스키마와 작성 중인 JSON은 API 프로세스의 `IntakeStore`가 메모리 변수로 보관한다. 추가 답변이 들어오면 같은 `application_id`의 기존 변수에 병합하고, 완성된 뒤에도 다음 로직이 조회할 수 있도록 유지한다.
 
 ```mermaid
 flowchart TD
-    IN["사용자/환자정보 JSON 수신"] --> VALID["스키마 검증"]
-    VALID --> ENC["전송 구간 암호화"]
-    ENC --> REDIS["ElastiCache Redis<br/>session:{run_id}"]
-    REDIS --> NORM["비식별화 및 임상 이벤트 정규화"]
-    NORM --> PII["PII Vault 또는 계정 DB<br/>직접 식별자 분리"]
-    NORM --> CLIN["PatientClinicalEventTable"]
-    NORM --> RAG["환자별 비식별 Markdown<br/>+ metadata sidecar"]
-    RAG --> GRAPH["Bedrock KB GraphRAG<br/>Neptune Analytics"]
-    REDIS --> TTL["TTL 만료 후 자동 삭제"]
+    NOTICE["선택한 임상시험 공고"] --> SCHEMA["공통 스키마 + 공고별 필드"]
+    INPUT["자연어 지원서"] --> EXTRACT["LLM JSON 값 추출"]
+    SCHEMA --> EXTRACT
+    EXTRACT --> MEMORY["IntakeStore 메모리 변수"]
+    MEMORY --> MISSING{"누락 필드 있음?"}
+    MISSING -->|예, 최대 5회| ANSWER["누락 필드 추가 답변"]
+    ANSWER --> EXTRACT
+    MISSING -->|아니오| COMPLETE["COMPLETE JSON"]
+    COMPLETE --> LINK["person_id로 기존 환자 기록 연결"]
+    LINK --> ORCH["ScreeningOrchestrator"]
+    ORCH --> RAG["GraphRAG/Timeline 근거 조회"]
 ```
 
-ElastiCache 사용 원칙:
+메모리 변수 사용 원칙:
 
 | 항목 | 정책 |
 |------|------|
-| 용도 | 매칭 실행 중 임시 데이터 전달과 빠른 조회 |
-| 키 형식 | `matching:{run_id}:input`, `matching:{run_id}:normalized` |
-| TTL | 기본 15분에서 60분 사이, 재판정 중이면 연장 |
-| 저장 범위 | 원본 JSON은 최소 시간만 보관 |
-| 암호화 | in-transit encryption, at-rest encryption 활성화 |
-| 접근 | VPC 내부 API/Agent 워커만 접근 |
-| 로그 | 원본 JSON 전체를 로그에 남기지 않음 |
-| 영구 저장 | 비식별화 후 목적별 DB/S3/Bedrock GraphRAG에 저장 |
+| 용도 | 지원서 스키마, 현재 값, 재질문 횟수와 상태 유지 |
+| 키 | `schema_id`, `application_id` |
+| 값 병합 | 단일값은 최신 답변, 배열은 누적 후 중복 제거 |
+| 완료 조건 | JSON Schema의 모든 필수 필드가 채워짐 |
+| 재질문 제한 | 최대 5회 |
+| 완료 후 | 완성 JSON을 오케스트레이터에 전달하고 메모리 값은 유지 |
+| 현재 제약 | 서버 재시작 시 소실되며 다중 인스턴스 간 상태를 공유하지 않음 |
 
-수신 JSON 예시:
+오케스트레이터 연결 요청 예시:
 
 ```json
 {
-  "run_id": "run_20260804_001",
-  "user_id": "user_123",
-  "profile": {
-    "name": "홍길동",
-    "sex": "FEMALE",
-    "birth_year": 1990,
-    "interests": ["당뇨병", "디지털치료제"]
-  },
-  "patient_information_ref": "upload://doctor-note/session_abc",
-  "answers": [
-    {
-      "question_id": "q_pregnancy_001",
-      "value": "아니오"
-    }
-  ]
+  "person_id": 12345,
+  "actor": "system"
 }
 ```
 
-ElastiCache에 들어가는 값은 다음 단계에서 바로 분리된다.
-
-- `name`, 연락처, 계정 식별자: PII 저장소 또는 계정 DB
-- `sex`, `birth_year`, 관심 임상: 사용자 프로필 DB
-- 의사 소견서/환자정보 원문: S3 raw 영역에 암호화 저장
-- 비식별 임상 이벤트: DynamoDB, 서술 근거는 Bedrock GraphRAG
-- 추가 설문 답변: `SURVEY_ANSWER` 이벤트로 정규화
+`POST /api/v1/applications/{application_id}/screening`은 지원서 상태가 `COMPLETE`일 때만 실행된다. 지원서의 스칼라 필드는 `PATIENT_REPORTED` 보충 관찰값으로 바뀌며, 기존 환자 기록에 값이 있으면 기존 기록을 우선한다. 배열 필드는 단일 기준값으로 추측하지 않고 제외 내역에 남긴다. 응답에는 적용·제외 필드, `source_application_id`, 실제 `retrieval_mode`가 포함된다.
 
 ## 입력 데이터
 
@@ -534,12 +518,12 @@ DB 조회나 API 호출마다 에이전트를 만들지 않는다. 실행 순서
 | `EvidenceGatheringAgent` | Agent | 부족한 근거에 필요한 RAG/타임라인 Tool 호출 계획 |
 | `CriterionJudgeAgent` | Agent | 공고 기준과 근거를 비교해 `OK`, `NOT_OK`, `UNKNOWN` 제안 |
 | `EvidenceVerifier` | Agent | Judge 제안의 출처·시점·단위·규칙 일치 여부 검증 |
-| `QuestionAgent` | Agent | 부족 정보 질문 생성, 최대 5개 제한 |
+| `ApplicationIntake` | Service | 지원 스키마 생성, 자연어 값 추출·병합, 누락 필드 최대 5회 재질문 |
 | `UnknownDeliberation` | Agent | `UNKNOWN`을 2라운드 교차 검토하고 추천 생성 |
 | `ResultExplanationAgent` | Agent | 추천 결과와 사전 부적합 사유를 대상별로 설명 |
 | 공고·기준 조회 | Tool | `get_trial_notice`, `get_trial_criteria` |
-| 환자 근거 조회 | Tool | `search_rag_evidence`, `query_timeline_graph` |
-| 규칙 평가 | Tool | `evaluate_rule` |
+| 환자 근거 조회 | Tool | `evidence_retrieval_tool`, `timeline_graph_tool` |
+| 규칙 평가 | Tool | `rule_evaluator` |
 
 제거한 역할:
 
@@ -555,16 +539,20 @@ DB 조회나 API 호출마다 에이전트를 만들지 않는다. 실행 순서
 sequenceDiagram
     participant UI as User/Admin UI
     participant API as Matching API
+    participant INTAKE as ApplicationIntake
     participant ORCH as ScreeningOrchestrator
     participant TOOL as Criteria/Evidence Tools
     participant LLM as Bedrock LLM
     participant VERIFY as EvidenceVerifier
     participant D as UnknownDeliberation
-    participant Q as QuestionAgent
     participant DB as DB/S3/Bedrock GraphRAG
 
-    UI->>API: Refresh 또는 매칭 시작
-    API->>ORCH: run_id 생성 및 실행 요청
+    UI->>API: 공고 선택 및 자연어 지원서 제출
+    API->>INTAKE: 공통+공고별 스키마로 값 추출
+    INTAKE-->>UI: 누락 필드 재질문 (최대 5회)
+    INTAKE-->>API: COMPLETE JSON
+    UI->>API: person_id와 application_id로 스크리닝 요청
+    API->>ORCH: 지원서 보충 관찰값과 실행 요청
     ORCH->>TOOL: 최신 공고/기준 조회
     TOOL->>DB: TrialNotice/Criteria 조회
     ORCH->>TOOL: 환자 이벤트와 기준별 근거 조회
@@ -583,17 +571,18 @@ sequenceDiagram
 
 오케스트레이션 단계:
 
-1. `run_id`를 만들고 실행 이력을 저장한다.
-2. Medi25 공고 DB에서 최신 모집공고와 기준 버전을 가져온다.
-3. 사용자의 관심 질환, 지역, 성별, 나이로 1차 후보를 좁힌다.
-4. 후보 임상시험별 선정/제외 기준을 불러온다.
-5. 환자 임상 이벤트와 의사 소견서 근거를 조회한다.
-6. Graph RAG에서 기준별 환자 근거와 표준문서 근거를 가져온다.
-7. Bedrock LLM이 기준별 상태를 제안한다.
-8. Verifier가 근거 출처, 날짜, 단위, 기준 연산자를 검증한다.
-9. 앞단 재질문 후에도 남은 `UNKNOWN` 중 애매한 기준만 A2A 토론으로 넘긴다.
-10. A2A는 제한 라운드 안에서 종료하고, 토론 결과를 바로 추천 또는 사람 검토에 반영한다.
-11. 결과 JSON과 보고서를 저장한다.
+1. 선택 공고에 공통 지원 스키마와 공고별 추가 필드를 합쳐 버전을 고정한다.
+2. 자연어 지원서와 추가 답변을 메모리 변수에 병합하며 누락 필드를 최대 5회 재질문한다.
+3. `COMPLETE` 지원서를 `person_id`로 기존 환자 기록과 연결한다.
+4. 지원서 스칼라 필드를 `PATIENT_REPORTED` 보충 관찰값으로 변환한다.
+5. `run_id`를 만들고 해당 공고의 최신 선정/제외 기준 버전을 가져온다.
+6. Timeline Tool에서 기존 구조화 임상 이벤트를 조회하고, 기존 기록에 값이 없을 때만 지원서 보충값을 적용한다.
+7. 자유서술 근거가 필요한 기준은 GraphRAG `evidence_retrieval_tool`로 환자 근거를 조회한다.
+8. Bedrock LLM이 기준별 상태를 제안한다.
+9. Verifier가 근거 출처, 날짜, 단위, 기준 연산자를 검증한다.
+10. 남은 `UNKNOWN` 중 애매한 기준만 A2A 토론으로 넘긴다.
+11. A2A는 제한 라운드 안에서 종료하고, 토론 결과를 추천 또는 사람 검토에 반영한다.
+12. 결과 JSON, 지원서 연결 메타데이터와 감사 이벤트를 저장한다.
 
 ### 에이전트 Tool 계약
 
@@ -604,18 +593,20 @@ LLM이 직접 DB를 읽는 것이 아니라, 허용된 Tool을 통해서만 근�
 | `refresh_trial_notices` | `keyword`, `force_refresh` | 신규/변경 공고 목록 |
 | `get_trial_notice` | `trial_id` | 공고 정규화 JSON |
 | `get_trial_criteria` | `trial_id`, `criteria_version` | 선정/제외 기준 JSON |
-| `search_rag_evidence` | `patient_key`, `criterion_id`, `query` | 환자 근거/표준문서 문장 목록 |
-| `query_timeline_graph` | `patient_key`, `field`, `time_window` | 구조화 임상 이벤트 |
-| `evaluate_rule` | `criterion`, `observations` | 규칙 기반 판정 |
+| `evidence_retrieval_tool` | `ToolContext`, `terms`, `top_k` | 환자별 자유서술 근거 문장 목록 |
+| `timeline_graph_tool` | `ToolContext`, `fields` | 구조화 임상 관찰값 |
+| `rule_evaluator` | `ToolContext`, `rule`, `observation` | 규칙 기반 판정 |
 | `save_matching_report` | `run_id`, `result_json` | 보고서 저장 위치 |
-| `record_chatbot_schema` | `run_id`, `chat_messages` | 정규화된 사용자 JSON |
-| `generate_intake_questions` | `run_id`, `candidate_criteria`, `limit=5` | 환자정보 기입 직후 최대 5개 재질문 |
+| `POST /api/v1/application-schemas` | 공고문 또는 추가 필드 | 버전 고정 지원 JSON Schema |
+| `POST /api/v1/applications` | `schema_id`, 자연어 지원서 | 최초 추출값과 누락 필드 질문 |
+| `POST /api/v1/applications/{id}/responses` | 추가 자연어 답변 | 병합된 값과 다음 누락 필드 질문 |
+| `POST /api/v1/applications/{id}/screening` | `person_id`, `actor` | GraphRAG 오케스트레이터 실행 결과 |
 
 Tool 호출 권한:
 
 - `ScreeningOrchestrator`만 Gateway를 통해 공고 기준 Tool과 저장 Tool을 호출한다.
 - `EvidenceGatheringAgent`에는 환자 근거 RAG와 비식별 임상 이벤트 조회 Tool만 노출한다.
-- `QuestionAgent`는 환자정보 기입 직후 부족 필드와 사용자 프로필 일부만 접근하고, 질문은 최대 5개만 생성한다.
+- 지원서 재질문은 `ApplicationIntake`가 현재 스키마의 누락 필드만 대상으로 최대 5회 발행한다.
 - `EvidenceVerifier`와 `UnknownDeliberation`은 조립된 근거 번들만 읽으며 DB Tool이나 원본 개인정보에 접근하지 않는다.
 
 ## 7. 판단 모델
@@ -633,7 +624,7 @@ Tool 호출 권한:
 - 선정 기준이 `OK`이면 통과 후보로 본다.
 - 선정 기준이 `NOT_OK`이면 추천 점수를 크게 낮추거나 제외한다.
 - 제외 기준이 `NOT_OK`이면 해당 임상시험은 제외한다.
-- 부족한 환자정보는 매칭 실행 전에 최대 5개 질문으로 먼저 보완한다.
+- 부족한 지원서 필드는 매칭 실행 전에 최대 5회 재질문으로 먼저 보완한다.
 - 매칭 이후 남은 `UNKNOWN`은 A2A 토론 또는 사람 검토로 해소한다.
 - A2A는 재귀적으로 Verifier를 다시 호출하지 않고, 제한 라운드 후 추천 반영 또는 사람 검토로 종료한다.
 
@@ -835,26 +826,28 @@ API는 규칙의 `screening_decision`과 A2A를 반영한 `recommendation_decisi
 | 기능 | Bedrock 사용 |
 |------|--------------|
 | 공고 기준 추출 | Bedrock Converse API |
-| 환자정보/의사 소견서 자유서술 해석 | Bedrock Converse API |
-| 질문 생성 | Bedrock Converse API |
+| 공고별 지원 스키마 필드 생성 | Bedrock Converse API |
+| 자연어 지원서 JSON 값 추출 | Bedrock Converse API |
+| 누락 필드 재질문 | 백엔드 규칙이 누락 필드 목록으로 생성, 최대 5회 |
 | RAG 검색/그래프 | Bedrock Knowledge Bases GraphRAG + Neptune Analytics |
 | 임베딩 | Amazon Titan Text Embeddings v2 |
 | 그래프 구성 | Amazon Nova 기반 chunk entity extraction |
 | 안전장치 | Bedrock Guardrails |
-| 에이전트 오케스트레이션 | Bedrock Agents 또는 자체 Orchestrator |
+| 에이전트 오케스트레이션 | 자체 `ScreeningOrchestrator` + Tool Gateway |
 
 ## 구현 우선순위
 
 1. Medi25 공고 JSON 스키마 확정
-2. 사용자 프로필 JSON 스키마 확정
-3. 환자정보 임상 이벤트 JSON 스키마 확정
-4. 임상시험 기준 JSON 스키마 확정
-5. `OK`, `NOT_OK`, `UNKNOWN` 판정 규칙 정의
-6. 환자별 GraphRAG 문서/metadata 및 검색 필터 계약 정의
-7. Bedrock tool-use 에이전트 계약 정의
-8. `UNKNOWN` 질문 생성 모델 구현
-9. A2A 토론 결과 JSON 구현 (완료: 최대 5개 기준, 2라운드)
-10. 최종 추천 결과 API 구현 (완료: 실행·저장·재조회)
+2. 임상시험 기준 JSON 스키마 확정
+3. 공통+공고별 지원 JSON Schema 구현 (완료)
+4. 자연어 값 추출·누락 필드 최대 5회 재질문 구현 (완료)
+5. 완성 지원서 메모리 유지와 오케스트레이터 연결 API 구현 (완료)
+6. 지원서 필드 → `PATIENT_REPORTED` 보충 관찰값 변환 구현 (완료)
+7. `OK`, `NOT_OK`, `UNKNOWN` 판정 규칙 정의
+8. 환자별 GraphRAG 문서/metadata 및 검색 필터 계약 정의
+9. Bedrock tool-use 에이전트 계약 정의
+10. A2A 토론 결과 JSON 구현 (완료: 최대 5개 기준, 2라운드)
+11. 최종 추천 결과 API 구현 (완료: 실행·저장·재조회)
 
 ## 설계 원칙
 
