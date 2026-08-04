@@ -9,14 +9,27 @@ from fastapi.middleware.cors import CORSMiddleware
 from agent.toolspec import tool_names
 from .config import settings
 from .container import Container, build_container
+from .intake import (
+    ApplicationNotFound,
+    ApplicationSchemaNotFound,
+    FollowUpLimitReached,
+    IntakeExtractionError,
+)
+from .intake.service import InvalidGeneratedSchema
 from .orchestration.runtime import PatientNotFound, TrialNotFound
 from .reasoning.supplements import SupplementBuilder
 from .repository import DatasetRepository
 from .schemas import (
     AnswerRequest,
     AnswerResponse,
+    ApplicationAdditionalResponse,
+    ApplicationIntakeResponse,
+    ApplicationSchemaCreateRequest,
+    ApplicationSchemaResponse,
+    ApplicationStartRequest,
     ArchitectureResponse,
     AuditEventOut,
+    BaseApplicationSchemaResponse,
     CohortResponse,
     CohortRunRequest,
     EvidencePacketOut,
@@ -186,6 +199,126 @@ def get_trial(trial_id: str, repository: Repository) -> dict:
         **repository.trial_summary(trial),
         "criteria": repository.trial_criteria(trial_id),
     }
+
+
+# ---------------------------------------------------------------------------
+# 공고 기반 자연어 지원서 수집
+# ---------------------------------------------------------------------------
+
+
+@app.get(
+    "/api/v1/application-schemas/base",
+    response_model=BaseApplicationSchemaResponse,
+    tags=["applications"],
+)
+def get_base_application_schema(container: Ctx) -> dict:
+    """공고 확장 전의 고정 기본 스키마 v1을 반환한다."""
+    return container.application_intake.base_schema()
+
+
+@app.post(
+    "/api/v1/application-schemas",
+    response_model=ApplicationSchemaResponse,
+    tags=["applications"],
+)
+def create_application_schema(
+    payload: ApplicationSchemaCreateRequest, container: Ctx
+) -> dict:
+    """기본 스키마에 공고별 필드를 추가해 버전이 고정된 스키마를 만든다."""
+    try:
+        return container.application_intake.generate_schema(
+            trial_id=payload.trial_id,
+            notice_text=payload.notice_text,
+            additional_fields=(
+                [item.model_dump() for item in payload.additional_fields]
+                if payload.additional_fields is not None
+                else None
+            ),
+        )
+    except InvalidGeneratedSchema as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+@app.get(
+    "/api/v1/application-schemas/{schema_id}",
+    response_model=ApplicationSchemaResponse,
+    tags=["applications"],
+)
+def get_application_schema(schema_id: str, container: Ctx) -> dict:
+    try:
+        return container.application_intake.get_schema(schema_id)
+    except ApplicationSchemaNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Application schema not found"
+        ) from exc
+
+
+@app.post(
+    "/api/v1/applications",
+    response_model=ApplicationIntakeResponse,
+    tags=["applications"],
+)
+def start_application(payload: ApplicationStartRequest, container: Ctx) -> dict:
+    """첫 자연어 지원서를 추출하고 누락된 필드의 추가 작성 요청을 반환한다."""
+    try:
+        return container.application_intake.start_application(
+            schema_id=payload.schema_id,
+            application_text=payload.application_text,
+        )
+    except ApplicationSchemaNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Application schema not found"
+        ) from exc
+    except IntakeExtractionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+        ) from exc
+
+
+@app.post(
+    "/api/v1/applications/{application_id}/responses",
+    response_model=ApplicationIntakeResponse,
+    tags=["applications"],
+)
+def add_application_response(
+    application_id: str,
+    payload: ApplicationAdditionalResponse,
+    container: Ctx,
+) -> dict:
+    """추가 자연어 답변을 기존 값에 병합하고 완성 여부를 다시 검사한다."""
+    try:
+        return container.application_intake.add_response(
+            application_id, payload.response_text
+        )
+    except ApplicationNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Application not found"
+        ) from exc
+    except FollowUpLimitReached as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Maximum of 5 follow-up questions has been reached",
+        ) from exc
+    except IntakeExtractionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+        ) from exc
+
+
+@app.get(
+    "/api/v1/applications/{application_id}",
+    response_model=ApplicationIntakeResponse,
+    tags=["applications"],
+)
+def get_application(application_id: str, container: Ctx) -> dict:
+    try:
+        return container.application_intake.get_application(application_id)
+    except ApplicationNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Application not found"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------

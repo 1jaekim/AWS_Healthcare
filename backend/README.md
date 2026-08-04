@@ -61,6 +61,7 @@ backend/
 │   │   ├── tools/                    # Criteria, Evidence, Timeline, Rule
 │   │   ├── reasoning/                # 근거 검증, 취합, 상태 확정
 │   │   ├── actions/                  # Cohort, Packet, NextBest, Explanation
+│   │   ├── intake/                   # 기본+공고 스키마, 자연어 지원서 반복 수집
 │   │   ├── domain/                   # 상태 모델, 기준 정의
 │   │   ├── persistence/              # Run Store, 감사 로그
 │   │   ├── safety/                   # Guardrails, Observability
