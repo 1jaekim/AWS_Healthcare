@@ -1,0 +1,22 @@
+# Amplify Hosting 응답 헤더.
+#
+# 해시가 붙은 에셋은 오래 캐시하고, index.html 은 캐시하지 않는다.
+# index.html 을 캐시하면 새로 배포해도 옛 번들을 가리키는 HTML 이 남는다.
+
+customHeaders:
+  - pattern: '/assets/**'
+    headers:
+      - key: Cache-Control
+        value: 'public, max-age=31536000, immutable'
+  - pattern: '/index.html'
+    headers:
+      - key: Cache-Control
+        value: 'no-cache, no-store, must-revalidate'
+  - pattern: '**'
+    headers:
+      - key: X-Content-Type-Options
+        value: nosniff
+      - key: X-Frame-Options
+        value: DENY
+      - key: Referrer-Policy
+        value: strict-origin-when-cross-origin

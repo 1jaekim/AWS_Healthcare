@@ -1,0 +1,31 @@
+# Amplify Hosting 빌드 스펙 (모노레포 형식).
+#
+# 이 저장소는 루트에 backend/, agent/, frontend/ 가 함께 있으므로 appRoot 로
+# 프론트만 가리킨다. Amplify 콘솔에서 앱을 연결할 때 "Monorepo" 를 고르고
+# 앱 루트를 frontend 로 지정하면 이 파일을 그대로 쓴다.
+#
+# 환경 변수(VITE_*)는 Amplify 콘솔 > 환경 변수에 등록한다. Vite 는 빌드 시점에
+# 값을 번들에 굽기 때문에, 값을 바꾸면 반드시 재배포해야 반영된다.
+#
+#   VITE_API_BASE_URL   백엔드 FastAPI 주소 (예: https://api.example.com)
+#   VITE_USE_MOCK       백엔드 배포 전이면 true, 붙일 준비가 되면 false
+#   VITE_DEMO_PERSON_ID 데모 계정이 바인딩될 person_id
+
+version: 1
+applications:
+  - appRoot: frontend
+    frontend:
+      phases:
+        preBuild:
+          commands:
+            - npm ci
+        build:
+          commands:
+            - npm run build
+      artifacts:
+        baseDirectory: dist
+        files:
+          - '**/*'
+      cache:
+        paths:
+          - node_modules/**/*
