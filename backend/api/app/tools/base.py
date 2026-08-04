@@ -65,6 +65,7 @@ class ToolContext:
     trial_id: str
     index_encounter_id: str
     index_date: str
+    patient_key: str | None = None
 
 
 @runtime_checkable

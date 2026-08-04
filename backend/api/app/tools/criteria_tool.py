@@ -9,10 +9,26 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
-from ..domain.criteria import spec_for
+from ..domain.criteria import FieldSpec, spec_for
 from ..domain.models import CriterionRule
 from ..repository import DatasetRepository
 from .base import Action, BaseTool, DataStore, Permission, ToolContext
+
+
+def _window_days(row: dict[str, str], spec: FieldSpec) -> int | None:
+    """기준의 관찰 기간을 정한다.
+
+    공고에서 기간이 명시되면 그 값을 쓰고, 없으면 필드 카탈로그의 기본 창을 쓴다.
+    카탈로그 값은 데이터가 아니라 코드라서 `criteria_version` 해시에는 넣지 않는다.
+    기준 행에 기간이 실려 오면 그때 해시에 포함된다.
+    """
+    raw = (row.get("time_window_days") or "").strip()
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            return spec.window_days
+    return spec.window_days
 
 
 def _criteria_version(rows: list[dict[str, str]]) -> str:
@@ -27,6 +43,13 @@ def _criteria_version(rows: list[dict[str, str]]) -> str:
                 row.get("value_low", ""),
                 row.get("value_high", ""),
                 row.get("unit", ""),
+                # 기간이 실려 오는 기준만 해시에 포함한다. 기간 컬럼이 없는 기존
+                # 기준의 버전 값을 흔들지 않기 위해서다.
+                *(
+                    (row["time_window_days"],)
+                    if row.get("time_window_days")
+                    else ()
+                ),
             )
         )
         for row in sorted(rows, key=lambda item: item["criterion_id"])
@@ -79,6 +102,7 @@ class CriteriaTool(BaseTool):
                     kind=spec.kind,
                     trial_id=trial_id,
                     criteria_version=version,
+                    time_window_days=_window_days(row, spec),
                 )
             )
         rules.sort(key=lambda rule: rule.criterion_id)

@@ -85,7 +85,7 @@ class ToolGateway:
             f"tool:{tool_name}",
             "TOOL",
             tool_name=tool_name,
-            person_id=context.person_id,
+            patient_key=context.patient_key,
             trial_id=context.trial_id,
             permissions=sorted(str(item) for item in granted),
         ) as attributes:

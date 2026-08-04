@@ -736,6 +736,8 @@ class IntakeAgent:
                 "model:intake_normalizer",
                 "MODEL",
                 mode=getattr(self._model, "mode", "unknown"),
+                prompt=INTAKE_NORMALIZER.label,
+                prompt_checksum=INTAKE_NORMALIZER.checksum,
             ) as attributes:
                 response = self._model.converse(
                     conversation=conversation, system=INTAKE_NORMALIZER

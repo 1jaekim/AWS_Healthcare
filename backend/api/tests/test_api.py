@@ -13,7 +13,8 @@ def test_health_reports_loaded_dataset() -> None:
     assert body["data_counts"]["patients"] == 348
     assert body["data_counts"]["encounters"] == 2097
     assert body["data_counts"]["canonical_notes"] == 2097
-    assert body["rag_status"] == "not_configured"
+    assert body["rag_status"] == "local_keyword"
+    assert body["graph_status"] == "not_configured"
 
 
 def test_patient_timeline_excludes_embedded_trial_verdict() -> None:

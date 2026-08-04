@@ -22,7 +22,12 @@ from .contracts import (
     Tracer,
 )
 from .model import Conversation, ModelClient, ModelError
-from .prompts import EXPLANATION_ADMIN, EXPLANATION_PATIENT, QUESTION_WRITER
+from .prompts import (
+    EXPLANATION_ADMIN,
+    EXPLANATION_PATIENT,
+    QUESTION_WRITER,
+    Prompt,
+)
 
 _MAX_ITEMS_IN_PROMPT = 12
 
@@ -71,7 +76,7 @@ class ModelExplanationAgent:
             "다음 판정 결과를 설명하라.\n\n"
             + json.dumps(payload, ensure_ascii=False, indent=2)
         )
-        system = (
+        system: Prompt = (
             EXPLANATION_PATIENT if audience == "patient" else EXPLANATION_ADMIN
         )
 
@@ -82,6 +87,8 @@ class ModelExplanationAgent:
                 "MODEL",
                 audience=audience,
                 mode=getattr(self._model, "mode", "unknown"),
+                prompt=system.label,
+                prompt_checksum=system.checksum,
             ) as attributes:
                 response = self._model.converse(
                     conversation=conversation, system=system
@@ -162,6 +169,11 @@ class ModelExplanationAgent:
             "decision_label": outcome.decision_label,
             "criteria_met": outcome.criteria_met,
             "criteria_total": outcome.criteria_total,
+            "rejection_reasons": [
+                ModelExplanationAgent._rejection_reason_payload(item)
+                for item in results
+                if str(item.status) == "CONTRADICTED"
+            ],
             "criteria": [
                 {
                     "criterion_id": item.criterion_id,
@@ -173,10 +185,37 @@ class ModelExplanationAgent:
                     "unit": item.unit,
                     "observed_at": item.observed_at,
                     "source_ids": list(item.source_ids),
+                    "rag_evidence": ModelExplanationAgent._narrative_payload(item),
                 }
                 for item in results[:_MAX_ITEMS_IN_PROMPT]
             ],
         }
+
+    @staticmethod
+    def _rejection_reason_payload(item: CriterionResult) -> dict[str, Any]:
+        """모집공고 기준과 환자 근거를 나란히 둔다."""
+        return {
+            "criterion_id": item.criterion_id,
+            "label": item.label,
+            "recruitment_notice_condition": item.expected_condition,
+            "patient_evidence": item.observed_value or "미확인",
+            "evidence_date": item.observed_at,
+            "source_ids": list(item.source_ids),
+            "rag_evidence": ModelExplanationAgent._narrative_payload(item),
+        }
+
+    @staticmethod
+    def _narrative_payload(item: CriterionResult) -> list[dict[str, Any]]:
+        snippets = getattr(item, "narrative", ()) or ()
+        return [
+            {
+                "note_id": snippet.note_id,
+                "note_date": snippet.note_date,
+                "snippet": snippet.snippet,
+                "score": snippet.score,
+            }
+            for snippet in snippets[:3]
+        ]
 
     def explain_both(
         self,
@@ -268,6 +307,8 @@ class ModelNextBestEvidenceAgent:
                 "MODEL",
                 criterion_id=request.criterion_id,
                 mode=getattr(self._model, "mode", "unknown"),
+                prompt=QUESTION_WRITER.label,
+                prompt_checksum=QUESTION_WRITER.checksum,
             ):
                 response = self._model.converse(
                     conversation=conversation, system=QUESTION_WRITER

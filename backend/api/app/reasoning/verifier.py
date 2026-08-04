@@ -15,6 +15,12 @@ from ..safety.guardrails import LocalGuardrail
 from ..tools.evidence_retrieval import EvidenceRetrievalTool
 
 _LOW_CONFIDENCE = 0.55
+_PATIENT_REPORTED_CONFIDENCE = 0.5
+"""참여자 진술 기반 값의 확신도 상한.
+
+`_LOW_CONFIDENCE` 아래로 두어 상태가 REVIEW_REQUIRED 로 내려앉게 한다.
+자기 보고 값이 곧바로 적합·부적합을 확정하지 않게 막는 장치다.
+"""
 _NARRATIVE_MIN_SCORE = 0.34
 _ASSERTION_MIN_SCORE = 0.5
 """자유서술이 조건을 '주장'한다고 볼 최소 일치도.
@@ -83,6 +89,20 @@ class LocalEvidenceVerifier:
                 criterion_id=rule.criterion_id,
                 proposed_status=CriterionStatus.UNKNOWN,
                 confidence=0.2,
+                grounded=grounded,
+                notes=tuple(notes),
+            )
+
+        # 참여자 진술은 기록으로 확인된 값이 아니다. 규칙 계산 결과는 남기고
+        # 상태는 검토로 올린다. 답변이 UNKNOWN 을 해소하되 판정을 확정하지는 않는다.
+        if observation.source == "PATIENT_REPORTED":
+            notes.append(
+                "참여자 진술을 정규화한 값입니다. 기록 확인이 필요합니다."
+            )
+            return Verification(
+                criterion_id=rule.criterion_id,
+                proposed_status=CriterionStatus.REVIEW_REQUIRED,
+                confidence=_PATIENT_REPORTED_CONFIDENCE,
                 grounded=grounded,
                 notes=tuple(notes),
             )

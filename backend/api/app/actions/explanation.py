@@ -128,10 +128,20 @@ class ExplanationAgent:
             if item.status is CriterionStatus.EVIDENCE_FOUND:
                 continue
             observed = item.observed_value or "미확인"
-            lines.append(
-                f"[{item.criterion_id}] {item.label}: 관찰 {observed} / "
-                f"기준 {item.expected_condition} · {item.status}"
-            )
+            if item.status is CriterionStatus.CONTRADICTED:
+                evidence = "RAG·DB 근거"
+                if item.narrative:
+                    evidence = "RAG 근거"
+                lines.append(
+                    f"[{item.criterion_id}] {item.label}: 모집공고 기준 "
+                    f"{item.expected_condition} / {evidence} {observed} · "
+                    f"사전 부적합 사유"
+                )
+            else:
+                lines.append(
+                    f"[{item.criterion_id}] {item.label}: 관찰 {observed} / "
+                    f"기준 {item.expected_condition} · {item.status}"
+                )
         return lines
 
     @staticmethod
@@ -140,7 +150,10 @@ class ExplanationAgent:
         lines: list[str] = []
         for item in results:
             if item.status is CriterionStatus.CONTRADICTED:
-                lines.append(f"{item.label} 항목이 참여 조건과 맞지 않습니다.")
+                lines.append(
+                    f"모집공고의 {item.label} 조건과 확인된 기록이 맞지 않아 "
+                    "사전 확인에서는 참여 조건과 맞지 않는 항목으로 표시되었습니다."
+                )
             elif item.status in (
                 CriterionStatus.UNKNOWN,
                 CriterionStatus.CONFLICTING,

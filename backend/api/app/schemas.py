@@ -18,8 +18,8 @@ class HealthResponse(BaseModel):
     service: str
     version: str
     data_counts: DataCounts
-    rag_status: Literal["not_configured"]
-    graph_status: Literal["not_configured"]
+    rag_status: Literal["local_keyword", "bedrock_graphrag"]
+    graph_status: Literal["not_configured", "configured"]
 
 
 class PatientSummary(BaseModel):
@@ -247,6 +247,7 @@ class ScreeningRunResponse(BaseModel):
     eligibility_status: Literal[
         "ELIGIBLE", "INELIGIBLE", "NEEDS_MORE_EVIDENCE", "REVIEW_REQUIRED"
     ]
+    screening_decision: Literal["OK", "NOT_OK", "UNKNOWN"]
     decision_label: str
     criteria_total: int
     criteria_met: int
@@ -256,11 +257,73 @@ class ScreeningRunResponse(BaseModel):
     review_ticket_id: str | None = None
     mode: str = "deterministic"
     agent: dict[str, Any] = Field(default_factory=dict)
+    deliberation: dict[str, Any] = Field(default_factory=dict)
+    judgment: dict[str, Any] = Field(default_factory=dict)
+    """기준별 LLM 판단·검증 항목·최종 경로 요약. 판단자가 꺼져 있으면 비어 있다."""
     packet: EvidencePacketOut
     requests: list[EvidenceRequestOut]
     explanations: dict[str, ExplanationOut]
     trace: TraceSummary
+    supplements: dict[str, Any] | None = None
+    """재판정에서 참여자 답변이 반영된 내역. 일반 실행에서는 비어 있다."""
     limitations: list[str]
+
+
+class RecommendationRunRequest(BaseModel):
+    """환자와 비교할 임상시험 후보군. 없으면 활성 공고 전체를 사용한다."""
+
+    person_id: int = Field(gt=0)
+    trial_ids: list[str] | None = Field(default=None, min_length=1, max_length=50)
+    top_k: int = Field(default=3, ge=1, le=20)
+    actor: str = Field(default="system", min_length=1)
+
+
+class RecommendationCriterionOut(BaseModel):
+    criterion_id: str
+    criterion_type: str
+    label: str
+    screening_status: Literal["OK", "NOT_OK", "UNKNOWN"]
+    recommendation_status: Literal["OK", "NOT_OK", "UNKNOWN"]
+    reason: str
+    evidence_ids: list[str]
+    a2a_applied: bool
+    next_question: str | None = None
+
+
+class RecommendedTrialOut(BaseModel):
+    rank: int | None = None
+    run_id: str
+    trial_id: str
+    title: str
+    description: str
+    rank_score: float = Field(ge=0.0, le=1.0)
+    overall_status: Literal["MATCHED", "NEEDS_MORE_INFO", "EXCLUDED"]
+    screening_decision: Literal["OK", "NOT_OK", "UNKNOWN"]
+    recommendation_decision: Literal["OK", "NOT_OK", "UNKNOWN"]
+    criteria_met: int
+    criteria_total: int
+    unresolved_criteria: list[str]
+    human_review_required: bool
+    review_ticket_id: str | None = None
+    selection_reason: str
+    a2a: dict[str, Any] = Field(default_factory=dict)
+    criteria: list[RecommendationCriterionOut]
+
+
+class RecommendationLimits(BaseModel):
+    top_k: int
+    a2a_max_rounds: Literal[2]
+    a2a_max_criteria_per_trial: int = Field(ge=1, le=5)
+
+
+class RecommendationRunResponse(BaseModel):
+    recommendation_id: str
+    person_id: int
+    evaluated_trials: int
+    recommended_trials: list[RecommendedTrialOut]
+    excluded_trials: list[RecommendedTrialOut]
+    remaining_candidate_count: int
+    limits: RecommendationLimits
 
 
 class CohortRunRequest(BaseModel):
@@ -424,6 +487,16 @@ class ManagedAgentOut(BaseModel):
     source: str | None = None
 
 
+class PromptVersionOut(BaseModel):
+    """시스템 프롬프트 한 건의 버전 정보."""
+
+    id: str
+    version: str
+    contract: str
+    checksum: str
+    length: int
+
+
 class AgentStatusOut(BaseModel):
     """에이전트 계층 상태."""
 
@@ -436,6 +509,7 @@ class AgentStatusOut(BaseModel):
     fallback_reason: str | None = None
     exposed_tools: list[str] = Field(default_factory=list)
     managed_agents: list[ManagedAgentOut] = Field(default_factory=list)
+    prompts: list[PromptVersionOut] = Field(default_factory=list)
 
 
 class ArchitectureResponse(BaseModel):
@@ -445,3 +519,4 @@ class ArchitectureResponse(BaseModel):
     stores: dict[str, int]
     audit_events: int
     agent: AgentStatusOut
+    retrieval: dict[str, Any]

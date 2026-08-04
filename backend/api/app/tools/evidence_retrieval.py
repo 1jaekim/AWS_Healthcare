@@ -1,7 +1,7 @@
-"""Evidence Retrieval Tool: 자유서술 EMR 에서 근거 문장을 찾는다.
+"""Evidence Retrieval Tool 어댑터.
 
-Bedrock Knowledge Bases + OpenSearch 어댑터로 교체할 지점.
-지금은 동일한 반환 계약(문장 + 출처 ID + 점수)을 로컬 키워드 검색으로 구현한다.
+로컬 개발에서는 키워드 검색을 사용하고, Knowledge Base ID가 설정된 환경에서는
+Bedrock Retrieve를 호출한다. 두 구현은 동일한 NarrativeSnippet 계약을 반환한다.
 """
 
 from __future__ import annotations
@@ -15,6 +15,8 @@ from .base import Action, BaseTool, DataStore, Permission, ToolContext
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 _NEGATION_HINTS = ("없", "부인", "아니", "미확인", "해당하지")
+_EVENT_REFERENCE = re.compile(r"이벤트\s*참조\s*:\s*(evt_[a-f0-9]+)", re.IGNORECASE)
+_MAX_TOP_K = 5
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -22,10 +24,11 @@ def _split_sentences(text: str) -> list[str]:
 
 
 class EvidenceRetrievalTool(BaseTool):
-    """정제된 EMR 본문에서 조건 관련 문장을 검색한다."""
+    """로컬 정제 EMR에서 조건 관련 문장을 검색한다."""
 
     name = "evidence_retrieval_tool"
     permissions = (Permission(DataStore.KNOWLEDGE_BASE, Action.READ),)
+    retrieval_mode = "local_keyword"
 
     def __init__(self, repository: DatasetRepository) -> None:
         self._repository = repository
@@ -107,3 +110,148 @@ class EvidenceRetrievalTool(BaseTool):
         if negative == 0:
             return False
         return None
+
+
+class BedrockKnowledgeBaseEvidenceRetrievalTool(BaseTool):
+    """환자 격리 필터를 강제하는 Bedrock Knowledge Base Retrieve 어댑터."""
+
+    name = "evidence_retrieval_tool"
+    permissions = (Permission(DataStore.KNOWLEDGE_BASE, Action.READ),)
+    retrieval_mode = "bedrock_graphrag"
+
+    def __init__(
+        self,
+        *,
+        knowledge_base_id: str,
+        region: str = "us-east-1",
+        client: Any | None = None,
+    ) -> None:
+        if not knowledge_base_id.strip():
+            raise ValueError("knowledge_base_id is required")
+        self._knowledge_base_id = knowledge_base_id
+        self._region = region
+        self._client = client
+
+    def invoke(
+        self, context: ToolContext, /, **kwargs: Any
+    ) -> list[NarrativeSnippet]:
+        self.assert_allowed(Permission(DataStore.KNOWLEDGE_BASE, Action.READ))
+        if not context.patient_key or not context.patient_key.startswith("pt_"):
+            raise ValueError(
+                "Bedrock patient evidence retrieval requires a pseudonymous patient_key"
+            )
+
+        terms = tuple(
+            str(term).strip() for term in kwargs.get("terms", ()) if str(term).strip()
+        )
+        if not terms:
+            return []
+        top_k = max(1, min(int(kwargs.get("top_k", 3)), _MAX_TOP_K))
+        query = self._query_text(terms)
+        response = self._bedrock_client().retrieve(
+            knowledgeBaseId=self._knowledge_base_id,
+            retrievalQuery={"text": query},
+            retrievalConfiguration={
+                "vectorSearchConfiguration": {
+                    "numberOfResults": top_k,
+                    "filter": {
+                        "andAll": [
+                            {
+                                "equals": {
+                                    "key": "patient_key",
+                                    "value": context.patient_key,
+                                }
+                            },
+                            {
+                                "equals": {
+                                    "key": "document_type",
+                                    "value": "patient_evidence",
+                                }
+                            },
+                        ]
+                    },
+                }
+            },
+        )
+        return self._snippets(response, terms, top_k, context.patient_key)
+
+    def _bedrock_client(self) -> Any:
+        if self._client is None:
+            import boto3
+
+            self._client = boto3.client(
+                "bedrock-agent-runtime", region_name=self._region
+            )
+        return self._client
+
+    @staticmethod
+    def _query_text(terms: tuple[str, ...]) -> str:
+        joined = ", ".join(terms)
+        return (
+            "다음 임상시험 기준 표현과 직접 관련된 환자 임상 근거를 찾아라. "
+            f"조건: {joined}. 측정값, 부정 표현, 진단 또는 상태 문장을 우선한다."
+        )
+
+    @classmethod
+    def _snippets(
+        cls,
+        response: dict[str, Any],
+        terms: tuple[str, ...],
+        top_k: int,
+        patient_key: str,
+    ) -> list[NarrativeSnippet]:
+        snippets: list[NarrativeSnippet] = []
+        for rank, item in enumerate(response.get("retrievalResults", [])[:top_k], start=1):
+            metadata = item.get("metadata") or {}
+            if metadata.get("patient_key") != patient_key:
+                continue
+            if metadata.get("document_type") != "patient_evidence":
+                continue
+            text = str(item.get("content", {}).get("text") or "").strip()
+            if not text:
+                continue
+            event_match = _EVENT_REFERENCE.search(text)
+            location = cls._location(item.get("location") or {})
+            source_id = event_match.group(1) if event_match else location
+            if not source_id:
+                source_id = f"kb-result-{rank}"
+            matched = tuple(term for term in terms if term.casefold() in text.casefold())
+            score = item.get("score", 0.0)
+            try:
+                numeric_score = max(0.0, min(float(score), 1.0))
+            except (TypeError, ValueError):
+                numeric_score = 0.0
+            snippets.append(
+                NarrativeSnippet(
+                    note_id=source_id,
+                    encounter_id=source_id,
+                    note_date="",
+                    snippet=text[:800],
+                    matched_terms=matched or terms,
+                    score=round(numeric_score, 3),
+                )
+            )
+        return snippets
+
+    @staticmethod
+    def _location(location: dict[str, Any]) -> str:
+        for location_type in (
+            "s3Location",
+            "webLocation",
+            "confluenceLocation",
+            "salesforceLocation",
+            "sharePointLocation",
+        ):
+            value = location.get(location_type)
+            if not isinstance(value, dict):
+                continue
+            for key in ("uri", "url"):
+                if value.get(key):
+                    return str(value[key])
+        return ""
+
+
+__all__ = [
+    "BedrockKnowledgeBaseEvidenceRetrievalTool",
+    "EvidenceRetrievalTool",
+]

@@ -36,16 +36,16 @@ Protocol 로 선언하고 `backend/api/app/container.py` 가 구현을 주입합
                                               │
                                               ▼
 [backend]  공고 PDF/JSON → Protocol Parser → DynamoDB Criteria Store
-           원본 EMR      → Sanitizer      → S3 rag/ ─┐
-           타임라인/측정값 → Graph ETL      → Neptune   │
-                                                      ▼
-[rag]                                    Bedrock KB + OpenSearch 색인
-                                                      │
-                                                      ▼
-[agent]    근거 수집 루프 · NLI 검증 · 설명/확인질문 생성 (Bedrock FM)
-                                                      │
-                                                      ▼
-[backend]  규칙 기반 기준별 상태 확정 → 종합 적격성 판정 → 근거 패킷 반환
+           환자 임상 JSON → Sanitizer → S3 rag/patients/
+                                      → Bedrock KB GraphRAG
+                                      → Neptune Analytics
+                                                │
+                                                ▼
+[agent]    Criteria Store + GraphRAG Retrieve + Timeline Tool로 근거 수집
+           → 기준별 검증 → 제한된 UNKNOWN 토론 → 추천·설명 생성 (Bedrock FM)
+                                                │
+                                                ▼
+[backend]  OK / NOT_OK / UNKNOWN 확정 → 근거 패킷 반환
 ```
 
 FM은 적격성을 결정하지 않습니다. 판정 확정은 결정론적 규칙이 담당해
@@ -99,10 +99,10 @@ cdk deploy --all
 
 | 영역 | 담당 | 상태 |
 |------|------|------|
-| 데이터 파이프라인 (Sanitizer, Graph ETL, Neptune, Protocol Parser) | Lee-namju | 완료 |
+| 데이터 파이프라인 (Sanitizer, Bedrock GraphRAG, Protocol Parser) | Lee-namju | 구현 중 |
 | 관측성 (CloudWatch, SNS) | Lee-namju | 완료 |
-| Medi25 크롤러 | 1jaekim | 문서 완료, 구현 예정 |
+| Medi25 크롤러 | 1jaekim | 실행 코드 포함 |
 | 스크리닝 오케스트레이터 API | GGeunGGeun | 완료 |
 | 에이전트 계층 (`agent/`) | GGeunGGeun | 완료, Bedrock 실호출 미검증 |
-| RAG 검색 계층 | 미정 | 진행 예정 |
-| 로컬 어댑터 → AWS 연결 | 공동 | 진행 예정 |
+| RAG 검색 계층 | 미정 | Bedrock KB Retrieve 연결 완료 |
+| AWS 배포 검증 | 공동 | 진행 예정 |

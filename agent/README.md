@@ -18,8 +18,12 @@ FM은 적격성을 결정하지 않습니다. 동일 입력 → 동일 판정을
 
 | 담당 | 주체 |
 |------|------|
-| 근거 수집 판단, NLI 검증, 설명·확인질문 생성 | Bedrock FM |
-| 수치·기간 계산, 기준별 상태 확정, 종합 적격성 판정 | 규칙 (결정론적) |
+| 근거 수집 판단, 기준별 상태 제안, 설명·확인질문 생성 | Bedrock FM |
+| 수치·기간 계산, 판단 검증, 기준별 상태 확정, 종합 적격성 판정 | 규칙 (결정론적) |
+
+`Criterion Judge` 의 제안은 `app/reasoning/judgment.py` 의 검증 7항목과
+`app/reasoning/rule_aggregator.py` 의 확정 규칙 표를 지나야 상태가 됩니다.
+검증과 확정은 모두 호출자(backend) 쪽 결정론적 계층입니다.
 
 ## 구성
 
@@ -31,6 +35,8 @@ FM은 적격성을 결정하지 않습니다. 동일 입력 → 동일 판정을
 | `prompts.py` | 시스템 프롬프트 |
 | `toolspec.py` | 모델에 노출하는 도구 스키마와 화이트리스트 |
 | `loop.py` | tool-use 루프로 근거 보강 |
+| `deliberation.py` | 미해소 기준 2라운드 교차 검토와 결정론적 합의 |
+| `judge.py` | 기준별 `OK`·`NOT_OK`·`UNKNOWN` 제안. 실패 시 규칙 판정 승계 |
 | `verifier.py` | 근거 ↔ 기준 NLI 검증 |
 | `narration.py` | 판정 설명 생성, 확인 질문 작성 |
 | `intake.py` | 자유 문장 → 측정값·약물·이상반응·상태 이벤트 정규화 |
@@ -40,11 +46,15 @@ FM은 적격성을 결정하지 않습니다. 동일 입력 → 동일 판정을
 | 에이전트 | 역할 | 구현 |
 |----------|------|------|
 | Evidence Gathering | tool-use 루프로 근거 수집 | `loop.py` |
+| Criterion Judge | 기준별 `OK`·`NOT_OK`·`UNKNOWN` 제안 | `judge.py` |
 | Evidence Verifier | 근거 ↔ 기준 NLI 검증 | `verifier.py` |
-| Next Best Evidence | 정보 가치순 확인 질문 생성 | `narration.py` |
-| Explanation | 판정 근거 설명 생성 | `narration.py` |
+| UNKNOWN Deliberation | 검토자·반론자 2라운드 추천 | `deliberation.py` |
+| Question | 정보 가치순 확인 질문 생성, 최대 5개 | `narration.py` |
+| Result Explanation | 판정 근거와 사전 부적합 사유 설명 | `narration.py` |
 | Intake | 자유 문장 → 이벤트 정규화 | `intake.py` |
-| Medi25 Crawler | 모집공고 수집 (별도 계층) | `crawler/medi25-crawler-agent.md` |
+
+공고·기준·GraphRAG·타임라인 조회는 에이전트가 아니라 Tool이다. Medi25 수집도
+매칭 에이전트 계층 밖의 별도 수집 워크플로우로 운영한다.
 
 ## Intake 에이전트
 

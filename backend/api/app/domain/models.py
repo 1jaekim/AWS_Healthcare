@@ -11,7 +11,21 @@ from typing import Any, Literal
 
 from .states import CriterionKind, CriterionStatus
 
-EvidenceSource = Literal["CRITERIA_STORE", "TIMELINE_GRAPH", "NARRATIVE_EMR", "RULE_ENGINE"]
+EvidenceSource = Literal[
+    "CRITERIA_STORE",
+    "TIMELINE_GRAPH",
+    "NARRATIVE_EMR",
+    "RULE_ENGINE",
+    "PATIENT_REPORTED",
+]
+"""근거의 출처.
+
+`PATIENT_REPORTED` 는 참여자·연구자가 제출한 자유 문장에서 Intake 가 정규화한 값이다.
+기록으로 확인된 값과 같은 무게로 다루지 않는다. Verifier 가 이 출처를 보고
+판정을 확정하지 않고 검토로 올린다.
+"""
+
+PATIENT_REPORTED: EvidenceSource = "PATIENT_REPORTED"
 
 
 @dataclass(frozen=True)
@@ -29,6 +43,13 @@ class CriterionRule:
     kind: CriterionKind
     trial_id: str
     criteria_version: str
+    time_window_days: int | None = None
+    """기준이 요구하는 관찰 기간. 없으면 시점 제약이 없는 기준이다.
+
+    공고 기준 JSON 의 `time_window_days` 에 대응한다. 값이 있으면 관찰 시점이
+    인덱스 방문에서 이 일수 안에 들어와야 근거로 인정한다. 판정은 규칙이 하고,
+    기간 위반 여부는 Judgment Verifier 가 검사한다.
+    """
 
     def expected_repr(self) -> str:
         """기준 조건을 사람이 읽을 수 있는 문자열로 만든다."""

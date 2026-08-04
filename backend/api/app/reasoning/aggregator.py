@@ -24,6 +24,15 @@ class AggregateOutcome:
     open_criteria: tuple[str, ...]
     review_criteria: tuple[str, ...]
 
+    @property
+    def screening_decision(self) -> str:
+        """외부 사용자에게 노출하는 3값 추천 코드."""
+        if self.eligibility_status is EligibilityStatus.ELIGIBLE:
+            return "OK"
+        if self.eligibility_status is EligibilityStatus.INELIGIBLE:
+            return "NOT_OK"
+        return "UNKNOWN"
+
 
 _DECISION_LABELS: dict[EligibilityStatus, str] = {
     EligibilityStatus.ELIGIBLE: "사전 적합",

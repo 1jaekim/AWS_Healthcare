@@ -275,6 +275,7 @@ class StubModelClient:
 
         handler = {
             "nli": self._nli,
+            "evaluate_trial_criterion": self._judge,
             "explain": self._explain,
             "question": self._question,
             "plan": self._plan,
@@ -317,6 +318,44 @@ class StubModelClient:
                 "confidence": 0.2,
                 "rationale": "규칙 계산이 판정 불가입니다.",
                 "conflicts": [],
+            }
+        return ModelResponse(text=json.dumps(verdict, ensure_ascii=False))
+
+    def _judge(self, payload: dict[str, Any]) -> ModelResponse:
+        """규칙 계산 결과를 그대로 제안한다. 스텁은 판정을 뒤집지 않는다.
+
+        인용 근거는 입력에 실제로 들어 있는 `evidence_id` 만 쓴다. 스텁이 없는
+        출처를 만들어내면 Verifier 의 근거 존재 검사가 그것을 잡아내야 하는데,
+        그러면 스텁 모드의 판정이 규칙 경로와 달라진다.
+        """
+        criterion = payload.get("criterion") or {}
+        evidence = payload.get("evidence") or []
+        evidence_ids = [
+            str(item.get("evidence_id"))
+            for item in evidence
+            if isinstance(item, dict) and item.get("evidence_id")
+        ]
+        satisfied = (payload.get("rule_outcome") or {}).get("satisfied")
+
+        if not evidence_ids or satisfied is None:
+            verdict = {
+                "criterion_id": criterion.get("criterion_id"),
+                "proposed_status": "UNKNOWN",
+                "confidence": 0.2,
+                "reason": "규칙 계산이 판정 불가이거나 인용할 근거가 없습니다.",
+                "used_evidence_ids": [],
+                "missing_information": ["구조화 관찰값 또는 측정 시점"],
+                "needs_a2a": False,
+            }
+        else:
+            verdict = {
+                "criterion_id": criterion.get("criterion_id"),
+                "proposed_status": "OK" if satisfied else "NOT_OK",
+                "confidence": 0.85,
+                "reason": "규칙 계산 결과와 인용 근거가 일치합니다.",
+                "used_evidence_ids": evidence_ids[:1],
+                "missing_information": [],
+                "needs_a2a": False,
             }
         return ModelResponse(text=json.dumps(verdict, ensure_ascii=False))
 

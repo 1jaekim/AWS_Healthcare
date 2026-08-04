@@ -19,6 +19,8 @@ from ..persistence.audit import AuditTrail
 from ..persistence.run_store import RunStore
 from ..reasoning.aggregator import AggregateOutcome, DeterministicAggregator
 from ..reasoning.bundle import EvidenceBundleBuilder
+from ..reasoning.judgment import JudgmentVerifier
+from ..reasoning.rule_aggregator import A2A, CriterionDecision, RuleAggregator
 from ..reasoning.verifier import LocalEvidenceVerifier
 from ..safety.observability import TraceCollector
 from ..tools.base import PermissionDenied, ToolContext
@@ -69,9 +71,21 @@ class ScreeningOrchestrator:
         audit: AuditTrail,
         trace: TraceCollector,
         gatherer: Any | None = None,
+        deliberator: Any | None = None,
+        judge: Any | None = None,
+        judgment_verifier: JudgmentVerifier | None = None,
+        rule_aggregator: RuleAggregator | None = None,
+        patient_key_resolver: Any | None = None,
         mode: str = "deterministic",
     ) -> None:
         self._gatherer = gatherer
+        self._deliberator = deliberator
+        # 판단자가 붙으면 기준별로 LLM 판단 → Verifier → Rule Aggregator 를 돈다.
+        # 확정 계층은 판단자 유무와 무관하게 결정론적이다.
+        self._judge = judge
+        self._judgment_verifier = judgment_verifier or JudgmentVerifier()
+        self._rule_aggregator = rule_aggregator or RuleAggregator()
+        self._patient_key_resolver = patient_key_resolver
         self._mode = mode
         self._gateway = gateway
         self._criteria_tool = criteria_tool
@@ -93,8 +107,13 @@ class ScreeningOrchestrator:
         person_id: int,
         trial_id: str,
         actor: str = "system",
+        supplements: dict[str, Observation] | None = None,
     ) -> ScreeningOutput:
-        """스크리닝 한 건을 실행한다."""
+        """스크리닝 한 건을 실행한다.
+
+        `supplements` 는 참여자 답변에서 승격된 관찰값이다. 그래프에 값이 없는
+        필드만 채운다. 기록으로 확인된 값을 덮어쓰지 않는다.
+        """
         index_row = self._timeline_tool.index_encounter(person_id)
         if index_row is None:
             raise PatientNotFound(f"환자 타임라인을 찾을 수 없습니다: {person_id}")
@@ -106,6 +125,11 @@ class ScreeningOrchestrator:
             trial_id=trial_id,
             index_encounter_id=index_row["encounter_id"],
             index_date=index_row["encounter_date"],
+            patient_key=(
+                self._patient_key_resolver(person_id)
+                if self._patient_key_resolver is not None
+                else None
+            ),
         )
 
         self._audit.record(
@@ -134,13 +158,24 @@ class ScreeningOrchestrator:
 
             plan = self._router.plan(rules)
             observations = self._collect_observations(context, plan)
-            narratives = self._collect_narratives(context, plan)
+            # Agent 모드에서는 EvidenceGatheringAgent가 RAG Tool 호출을 계획한다.
+            # 결정론적 모드만 Runtime이 직접 조회한다.
+            narratives = (
+                {}
+                if self._gatherer is not None
+                else self._collect_narratives(context, plan)
+            )
+            applied = self._apply_supplements(
+                context, plan, observations, supplements, actor
+            )
             gathering = self._gather_more(
                 context, plan, narratives, observations
             )
+            decisions: list[CriterionDecision] = []
             results = self._resolve_criteria(
-                context, plan, observations, narratives, actor
+                context, plan, observations, narratives, actor, decisions
             )
+            deliberation = self._deliberate_unknowns(context, results, actor)
 
         outcome = self._aggregator.aggregate(results)
         run = ScreeningRun(
@@ -161,6 +196,9 @@ class ScreeningOrchestrator:
                     record.tool_name for record in self._gateway.calls_for(run_id)
                 ],
                 "agent": gathering,
+                "deliberation": deliberation,
+                "supplements": applied,
+                "judgment": self._judgment_summary(decisions),
             },
         )
 
@@ -180,6 +218,7 @@ class ScreeningOrchestrator:
         explanations = self._explainer.explain_both(
             outcome=outcome, results=results, run_id=run_id
         )
+        self._record_guardrail_events(context, explanations, actor)
 
         self._runs.save_run(run)
         self._runs.save_artifacts(
@@ -214,6 +253,99 @@ class ScreeningOrchestrator:
             review_ticket_id=ticket_id,
         )
 
+    def _record_guardrail_events(
+        self,
+        context: ToolContext,
+        explanations: dict[str, Any],
+        actor: str,
+    ) -> None:
+        """생성 문장이 차단·완화되었으면 감사 로그에 남긴다.
+
+        무엇을 왜 바꿨는지 남지 않으면 나중에 되짚을 수 없다. 규칙 ID와 심각도만
+        기록하고 원문은 남기지 않는다. 차단된 문구를 감사 로그로 흘리지 않기 위함이다.
+        """
+        for audience, payload in explanations.items():
+            if not isinstance(payload, dict):
+                continue
+            findings = payload.get("guardrail_findings") or []
+            blocked = bool(payload.get("blocked"))
+            if not findings and not blocked:
+                continue
+            self._audit.record(
+                "GUARDRAIL_TRIGGERED",
+                actor=actor,
+                run_id=context.run_id,
+                person_id=context.person_id,
+                trial_id=context.trial_id,
+                audience=audience,
+                blocked=blocked,
+                rule_ids=sorted(
+                    {
+                        str(item.get("rule_id"))
+                        for item in findings
+                        if item.get("rule_id")
+                    }
+                ),
+                severities=sorted(
+                    {
+                        str(item.get("severity"))
+                        for item in findings
+                        if item.get("severity")
+                    }
+                ),
+                finding_count=len(findings),
+            )
+
+    def _apply_supplements(
+        self,
+        context: ToolContext,
+        plan: ExecutionPlan,
+        observations: dict[str, Observation],
+        supplements: dict[str, Observation] | None,
+        actor: str,
+    ) -> dict[str, Any]:
+        """참여자 답변에서 온 관찰값으로 빈 필드를 채운다.
+
+        이미 값이 있는 필드는 건드리지 않는다. 계획에 없는 필드도 무시한다.
+        어떤 필드가 채워졌는지 메타데이터와 감사 로그에 남긴다.
+        """
+        if not supplements:
+            return {"applied": [], "ignored": []}
+
+        planned = {item.rule.field_name for item in plan.plans}
+        applied: list[str] = []
+        ignored: list[dict[str, str]] = []
+
+        for field_name, observation in supplements.items():
+            if field_name not in planned:
+                ignored.append(
+                    {"field": field_name, "reason": "이 시험 기준에 없는 필드입니다."}
+                )
+                continue
+            existing = observations.get(field_name)
+            if existing is not None and existing.value is not None:
+                ignored.append(
+                    {"field": field_name, "reason": "기록으로 확인된 값이 이미 있습니다."}
+                )
+                continue
+            observations[field_name] = observation
+            applied.append(field_name)
+
+        if applied:
+            self._audit.record(
+                "SUPPLEMENT_APPLIED",
+                actor=actor,
+                run_id=context.run_id,
+                person_id=context.person_id,
+                trial_id=context.trial_id,
+                fields=sorted(applied),
+                source_ids=[
+                    supplements[name].source_id for name in sorted(applied)
+                ],
+            )
+
+        return {"applied": sorted(applied), "ignored": ignored}
+
     def _gather_more(
         self,
         context: ToolContext,
@@ -242,6 +374,16 @@ class ScreeningOrchestrator:
             if existing is None or existing.value is None:
                 observations[field_name] = observation
 
+        # 모델이 실패하거나 도구 호출 없이 끝난 기준만 결정론적으로 보강한다.
+        fallback_queries: list[str] = []
+        for criterion_id, terms in plan.narrative_requests().items():
+            if narratives.get(criterion_id) or criterion_id in gathered.attempted:
+                continue
+            narratives[criterion_id] = self._gateway.invoke(
+                "evidence_retrieval_tool", context, terms=terms, top_k=3
+            )
+            fallback_queries.append(criterion_id)
+
         return {
             "enabled": True,
             "iterations": gathered.iterations,
@@ -250,7 +392,45 @@ class ScreeningOrchestrator:
             "input_tokens": gathered.input_tokens,
             "output_tokens": gathered.output_tokens,
             "error": gathered.error,
+            "fallback_queries": fallback_queries,
         }
+
+    def _deliberate_unknowns(
+        self,
+        context: ToolContext,
+        results: list[CriterionResult],
+        actor: str,
+    ) -> dict[str, Any]:
+        """미해소 기준을 유한 교차 검토하고 추천만 기록한다."""
+        if self._deliberator is None:
+            return {
+                "enabled": False,
+                "rounds": 0,
+                "max_rounds": 2,
+                "stopped_reason": "model_disabled",
+                "items": [],
+            }
+
+        deliberation = self._deliberator.deliberate(
+            results,
+            run_id=context.run_id,
+        )
+        payload = deliberation.to_dict()
+        if payload["rounds"]:
+            self._audit.record(
+                "UNKNOWN_DELIBERATION_COMPLETED",
+                actor=actor,
+                run_id=context.run_id,
+                person_id=context.person_id,
+                trial_id=context.trial_id,
+                rounds=payload["rounds"],
+                stopped_reason=payload["stopped_reason"],
+                recommendations={
+                    item["criterion_id"]: item["recommendation"]
+                    for item in payload["items"]
+                },
+            )
+        return payload
 
     def _collect_observations(
         self, context: ToolContext, plan: ExecutionPlan
@@ -293,6 +473,7 @@ class ScreeningOrchestrator:
         observations: dict[str, Observation],
         narratives: dict[str, list[NarrativeSnippet]],
         actor: str,
+        decisions: list[CriterionDecision] | None = None,
     ) -> list[CriterionResult]:
         """기준별로 규칙 계산 → 번들 → 검증 → 상태 확정을 수행한다."""
         results: list[CriterionResult] = []
@@ -320,6 +501,12 @@ class ScreeningOrchestrator:
                 attributes["proposed_status"] = str(verification.proposed_status)
                 attributes["confidence"] = verification.confidence
 
+            decision = self._judge_criterion(context, bundle, verification, actor)
+            if decision is not None:
+                verification = decision.verification
+                if decisions is not None:
+                    decisions.append(decision)
+
             result = self._aggregator.finalize(bundle, verification)
             results.append(result)
 
@@ -338,23 +525,154 @@ class ScreeningOrchestrator:
             )
         return results
 
+    @staticmethod
+    def _judgment_summary(
+        decisions: list[CriterionDecision],
+    ) -> dict[str, Any]:
+        """LLM 판단 단계의 실행 요약. 실행 메타데이터와 응답에 싣는다."""
+        if not decisions:
+            return {"enabled": False, "items": []}
+        return {
+            "enabled": True,
+            "mode": (
+                "model"
+                if any(item.judgment.model_backed for item in decisions)
+                else "rule"
+            ),
+            "criteria_total": len(decisions),
+            "decisions": {
+                "OK": sum(1 for item in decisions if item.status == "OK"),
+                "NOT_OK": sum(1 for item in decisions if item.status == "NOT_OK"),
+                "UNKNOWN": sum(
+                    1 for item in decisions if item.status == "UNKNOWN"
+                ),
+            },
+            "routes": {
+                route: sum(1 for item in decisions if item.route == route)
+                for route in sorted({item.route for item in decisions})
+            },
+            "a2a_criteria": [
+                item.criterion_id for item in decisions if item.route == A2A
+            ],
+            "failed_checks": sorted(
+                {
+                    check.check_id
+                    for item in decisions
+                    for check in item.report.failures
+                }
+            ),
+            "input_tokens": sum(
+                item.judgment.input_tokens for item in decisions
+            ),
+            "output_tokens": sum(
+                item.judgment.output_tokens for item in decisions
+            ),
+            "items": [item.to_dict() for item in decisions],
+        }
+
+    def _judge_criterion(
+        self,
+        context: ToolContext,
+        bundle: Any,
+        rule_verification: Any,
+        actor: str,
+    ) -> CriterionDecision | None:
+        """LLM 판단 → Verifier → Rule Aggregator 단계를 실행한다.
+
+        판단자가 없으면 None 을 돌려주고 호출부는 규칙 판정을 그대로 쓴다.
+        판단자가 있어도 상태 확정은 Rule Aggregator 가 하므로, 모델이 규칙보다
+        강한 결론을 내려도 판정이 올라가지 않는다.
+        """
+        if self._judge is None:
+            return None
+
+        criterion_id = bundle.rule.criterion_id
+        with self._trace.span(
+            context.run_id,
+            "reason:judge",
+            "AGENT",
+            criterion_id=criterion_id,
+        ) as attributes:
+            judgment = self._judge.judge(
+                bundle,
+                rule_verification=rule_verification,
+                run_id=context.run_id,
+                patient_key=context.patient_key,
+                index_date=context.index_date,
+            )
+            report = self._judgment_verifier.verify(
+                bundle,
+                judgment,
+                rule_verification=rule_verification,
+                index_date=context.index_date,
+            )
+            decision = self._rule_aggregator.confirm(
+                bundle,
+                judgment=judgment,
+                report=report,
+                rule_verification=rule_verification,
+            )
+            attributes["proposed_status"] = judgment.proposed_status
+            attributes["judgment_origin"] = judgment.origin
+            attributes["failed_checks"] = [
+                check.check_id for check in report.failures
+            ]
+            attributes["status"] = decision.status
+            attributes["route"] = decision.route
+
+        self._audit.record(
+            "CRITERION_JUDGED",
+            actor=actor,
+            run_id=context.run_id,
+            person_id=context.person_id,
+            trial_id=context.trial_id,
+            criterion_id=criterion_id,
+            proposed_status=judgment.proposed_status,
+            judgment_origin=judgment.origin,
+            rule_status=str(rule_verification.proposed_status),
+            status=decision.status,
+            route=decision.route,
+            used_evidence_ids=list(report.cited_evidence_ids),
+            fabricated_evidence_ids=list(report.fabricated_evidence_ids),
+            failed_checks=[check.check_id for check in report.failures],
+        )
+        return decision
+
     def _maybe_open_review(
         self, run: ScreeningRun, outcome: AggregateOutcome, actor: str
     ) -> str | None:
         """검토가 필요한 실행이면 큐 항목을 만든다."""
-        needs_review = [
+        needs_review = {
             item.criterion_id
             for item in run.results
             if item.status
             in (CriterionStatus.REVIEW_REQUIRED, CriterionStatus.CONFLICTING)
-        ]
+        }
+        deliberation = run.metadata.get("deliberation", {})
+        if deliberation.get("enabled") and deliberation.get("rounds", 0) > 0:
+            recommendations = {
+                str(item.get("criterion_id")): item.get("recommendation")
+                for item in deliberation.get("items", [])
+                if isinstance(item, dict) and item.get("criterion_id")
+            }
+            needs_review.update(
+                item.criterion_id
+                for item in run.results
+                if item.status
+                in (
+                    CriterionStatus.UNKNOWN,
+                    CriterionStatus.CONFLICTING,
+                    CriterionStatus.REVIEW_REQUIRED,
+                )
+                and recommendations.get(item.criterion_id) not in {"OK", "NOT_OK"}
+            )
         if not needs_review:
             return None
         ticket = self._runs.open_ticket(
             run_id=run.run_id,
             person_id=run.person_id,
             trial_id=run.trial_id,
-            criterion_ids=needs_review,
+            criterion_ids=sorted(needs_review),
         )
         self._audit.record(
             "REVIEW_DECIDED",
@@ -364,7 +682,7 @@ class ScreeningOrchestrator:
             trial_id=run.trial_id,
             ticket_id=ticket.ticket_id,
             status="PENDING",
-            criterion_ids=needs_review,
+            criterion_ids=sorted(needs_review),
         )
         return ticket.ticket_id
 

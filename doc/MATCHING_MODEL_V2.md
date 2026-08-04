@@ -22,9 +22,9 @@ flowchart TD
     AUTO --> A
     A --> CHECK["이미 수집한 데이터인지 확인"]
     CHECK --> B["공고 정규화 JSON 생성"]
-    B --> C["선정/제외 기준 추출"]
+    B --> C["선정/제외 기준 JSON 추출"]
     C --> D["임상시험 기준 JSON"]
-    D --> DBT["공고/기준 DB 저장"]
+    D --> DBT["공고/기준 DB 저장<br/>판정 Source of Truth"]
 
     U --> P["기본 정보 입력"]
     P --> E["환자정보 기입<br/>의사 소견서/직접 입력"]
@@ -36,12 +36,12 @@ flowchart TD
     CACHE --> J["환자 임상 JSON"]
     J --> DBP["환자 임상 데이터 DB 저장"]
 
-    DBT --> R["Graph RAG"]
+    DBT --> AG["Agent Orchestrator"]
     DBP --> R
     J --> R
     STD["표준문서/용어집/코드체계"] --> R
 
-    R --> AG["Agent Orchestrator"]
+    R["환자근거/표준문서 Graph RAG"] --> AG
     AG --> M["LLM 판단"]
     M --> V["Verifier / Rule Aggregator"]
     V --> O["OK / NOT_OK / UNKNOWN"]
@@ -67,6 +67,16 @@ flowchart TD
 | 재판정 시작 | 추가 설문 제출 | `UNKNOWN` 기준을 다시 판단 |
 
 초기 화면에서 중요한 버튼은 `Refresh 모집공고`, `공고 추가`, `매칭 시작`이다. `Refresh 모집공고`는 최신 Medi25 데이터를 가져와 DB에 반영하고, `공고 추가`는 관리자가 직접 모집공고를 등록하거나 수정하는 기능이다. `매칭 시작`은 현재 저장된 공고와 사용자 데이터를 기반으로 전체 에이전트 워크플로우를 실행한다.
+
+## 공고 기준 JSON 판정 원칙
+
+수집한 모집공고는 원문을 그대로 LLM에 길게 넣어 판정하지 않고, 먼저 구조화된 JSON으로 정규화한다. 런타임 매칭의 기준 원본은 `TrialCriteriaTable`의 선정/제외 기준 JSON이다.
+
+- `TrialNoticeTable`은 공고 목록, 출처, 상태, 해시, 최신성 정보를 관리한다.
+- `TrialCriteriaTable`은 선정/제외 기준 JSON과 `criteria_version`을 관리하며 기준 판정의 Source of Truth가 된다.
+- 공고 원문 HTML/PDF/문서는 S3 `trials/raw/`에 보존하고, 감사/재파싱/관리자 검토에만 사용한다.
+- RAG/Graph는 공고 기준 원본 저장소가 아니다. 환자 근거, 표준문서, 용어 매핑, 과거 판단 근거를 찾는 보조 계층으로 사용한다.
+- 기준 추출 JSON이 불완전하면 런타임에서 Long Context로 다시 판단하지 않고 `PENDING_REVIEW` 또는 `NEEDS_FIX`로 보내 관리자 검토 후 활성화한다.
 
 ## Chatbot JSON 기록 모델
 
@@ -177,7 +187,7 @@ flowchart TD
     V --> R{"검증 통과?"}
     R -->|예| S["TrialNotice/Criteria DB 저장"]
     R -->|아니오| E["수정 요청"]
-    S --> I["RAG/Graph 인덱스 갱신"]
+    S --> I["기준 JSON DB 활성화"]
     I --> H["관리자 감사 로그 저장"]
 ```
 
@@ -231,7 +241,7 @@ flowchart TD
     U -->|아니오| S["마지막 확인 시각만 갱신"]
     N --> P["기준 추출"]
     V --> P
-    P --> K["RAG/Graph 인덱스 갱신"]
+    P --> K["TrialNotice/Criteria DB 갱신"]
 ```
 
 공고 수집 시 확인할 값:
@@ -253,12 +263,12 @@ flowchart TD
 |--------|-------------|------|
 | 공고 원문 HTML/PDF | S3 `trials/raw/` | 원본 보존, 재파싱 가능 |
 | 공고 정규화 JSON | DynamoDB `TrialNoticeTable` | 목록 조회, 검색, 상태 관리 |
-| 선정/제외 기준 JSON | DynamoDB `TrialCriteriaTable` | 기준 버전 관리 |
-| 기준/공고 임베딩 문서 | S3 `rag/trials/` + Bedrock KB | RAG 검색용 |
+| 선정/제외 기준 JSON | DynamoDB `TrialCriteriaTable` | 기준 버전 관리, 판정 Source of Truth |
+| 표준문서/비식별 근거 문서 | S3 `rag/` + Bedrock KB GraphRAG | 환자 근거와 표준문서 검색용 |
 | 수신 개인정보 JSON | ElastiCache for Redis | 워크플로우 처리용 임시 저장, 짧은 TTL 적용 |
 | 환자정보 원문 | S3 `patient/raw/` | 의사 소견서/직접 입력 원문 암호화 저장, LLM 직접 전달 금지 |
-| 비식별 임상 이벤트 | DynamoDB 또는 Neptune | 매칭 판단용 이벤트 |
-| Graph RAG 관계 | Amazon Neptune | 환자-이벤트-기준-표준문서 연결 |
+| 비식별 임상 이벤트 | DynamoDB `PatientClinicalEventTable` | 정확한 수치·기간 판정용 이벤트 |
+| GraphRAG 관계/벡터 | Bedrock Knowledge Bases + Neptune Analytics | 문서 엔티티·관계 기반 근거 검색 |
 | 매칭 실행 결과 | DynamoDB `MatchingRunTable` | 실행 이력, 상태, 재실행 |
 | 최종 보고서 | S3 `reports/` + DynamoDB 메타데이터 | 사용자/관리자 조회용 |
 | A2A 토론 로그 | DynamoDB 또는 S3 append-only | `UNKNOWN` 판단 근거 보존 |
@@ -279,7 +289,7 @@ flowchart TD
 
 사용자에게서 받은 JSON에는 이름, 성별, 관심 임상, 의사 소견서, 추가 설문 답변처럼 민감한 정보가 섞일 수 있다. 이 데이터는 전체 워크플로우가 빠르게 돌아가도록 Amazon ElastiCache for Redis에 먼저 넘긴다.
 
-ElastiCache는 임시 처리 계층으로 사용한다. 영구 보관이 필요한 값은 비식별화와 정규화를 거친 뒤 DynamoDB, S3, Neptune에 목적별로 나누어 저장한다.
+ElastiCache는 임시 처리 계층으로 사용한다. 영구 보관이 필요한 값은 비식별화와 정규화를 거친 뒤 DynamoDB, S3, Bedrock Knowledge Bases GraphRAG에 목적별로 나누어 저장한다.
 
 ```mermaid
 flowchart TD
@@ -289,8 +299,8 @@ flowchart TD
     REDIS --> NORM["비식별화 및 임상 이벤트 정규화"]
     NORM --> PII["PII Vault 또는 계정 DB<br/>직접 식별자 분리"]
     NORM --> CLIN["PatientClinicalEventTable"]
-    NORM --> GRAPH["Neptune Graph"]
-    NORM --> RAG["Bedrock KB용 비식별 문서"]
+    NORM --> RAG["환자별 비식별 Markdown<br/>+ metadata sidecar"]
+    RAG --> GRAPH["Bedrock KB GraphRAG<br/>Neptune Analytics"]
     REDIS --> TTL["TTL 만료 후 자동 삭제"]
 ```
 
@@ -305,7 +315,7 @@ ElastiCache 사용 원칙:
 | 암호화 | in-transit encryption, at-rest encryption 활성화 |
 | 접근 | VPC 내부 API/Agent 워커만 접근 |
 | 로그 | 원본 JSON 전체를 로그에 남기지 않음 |
-| 영구 저장 | 비식별화 후 목적별 DB/S3/Neptune에 저장 |
+| 영구 저장 | 비식별화 후 목적별 DB/S3/Bedrock GraphRAG에 저장 |
 
 수신 JSON 예시:
 
@@ -334,7 +344,7 @@ ElastiCache에 들어가는 값은 다음 단계에서 바로 분리된다.
 - `name`, 연락처, 계정 식별자: PII 저장소 또는 계정 DB
 - `sex`, `birth_year`, 관심 임상: 사용자 프로필 DB
 - 의사 소견서/환자정보 원문: S3 raw 영역에 암호화 저장
-- 비식별 임상 이벤트: DynamoDB/Neptune/RAG
+- 비식별 임상 이벤트: DynamoDB, 서술 근거는 Bedrock GraphRAG
 - 추가 설문 답변: `SURVEY_ANSWER` 이벤트로 정규화
 
 ## 입력 데이터
@@ -492,53 +502,50 @@ Medi25에서 임상시험 모집공고를 가져온 뒤 표준 JSON으로 변환
 
 ## 5. Graph RAG 모델
 
-RAG는 그래프 기반으로 구축한다. 단순 문서 검색이 아니라 환자, 임상 이벤트, 공고 기준, 표준문서를 그래프로 연결한다.
+GraphRAG는 Amazon Bedrock Knowledge Bases의 관리형 GraphRAG와 Neptune Analytics를 사용한다. Bedrock이 S3 문서에서 chunk, entity, relationship을 추출하고 벡터와 그래프를 함께 관리한다. 공고 기준은 계속 `TrialCriteriaTable` JSON을 판정 원본으로 사용하며 GraphRAG에 넣지 않는다.
 
-그래프 노드:
+애플리케이션이 관리할 계약:
 
-| 노드 | 설명 |
+| 항목 | 계약 |
 |------|------|
-| `Patient` | 비식별 환자 |
-| `UserProfile` | 관심 임상, 지역, 기본 정보 |
-| `ClinicalEvent` | 검사, 진단, 약물, 설문 답변 |
-| `Trial` | Medi25 임상시험 공고 |
-| `Criterion` | 선정/제외 기준 |
-| `StandardConcept` | ICD, LOINC, ATC, 내부 용어 |
-| `EvidenceDocument` | 의사 소견서 문장, 공고 원문, 표준문서 chunk |
-
-그래프 관계:
-
-| 관계 | 설명 |
-|------|------|
-| `HAS_PROFILE` | 사용자가 프로필을 가짐 |
-| `HAS_EVENT` | 환자가 임상 이벤트를 가짐 |
-| `MATCHES_CONCEPT` | 이벤트가 표준 개념에 매핑됨 |
-| `HAS_CRITERION` | 임상시험이 기준을 가짐 |
-| `REQUIRES` | 기준이 특정 임상 조건을 요구 |
-| `SUPPORTED_BY` | 판정이 근거에 의해 지지됨 |
-| `CONTRADICTED_BY` | 판정이 근거와 충돌함 |
+| 환자 문서 | `rag/patients/{patient_key}.md` 환자별 비식별 Markdown |
+| 메타데이터 | 같은 경로의 `.metadata.json`, `patient_key`, `document_type`, `schema_version`, `phi_status` 포함 |
+| 환자 격리 | 모든 환자 근거 검색은 `patient_key` metadata filter 필수 |
+| 근거 참조 | 원본 방문 ID 대신 HMAC 기반 `event_key`를 문서에 기록 |
+| 구조화 판정 | 수치, 단위, 기간은 `PatientClinicalEventTable`에서 결정론적으로 조회 |
+| 그래프 구성 | Bedrock이 entity/relation을 자동 추출하며 사용자 정의 노드/엣지 스키마에 의존하지 않음 |
 
 사용 AWS:
 
-- Amazon Neptune: 환자 타임라인 및 기준 그래프
-- Bedrock Knowledge Bases: 비식별 문서 검색
-- OpenSearch Serverless: 벡터/키워드 검색
-- S3: 원문 및 정규화 데이터 저장
+- Amazon Bedrock Knowledge Bases GraphRAG: 문서 수집, entity/relation 추출, 검색
+- Amazon Neptune Analytics: Bedrock이 관리하는 그래프와 벡터 저장소
+- Amazon Titan Text Embeddings v2: 1,024차원 임베딩
+- Amazon Nova: GraphRAG ingestion 시 chunk entity extraction
+- S3: 환자별 비식별 Markdown과 metadata sidecar 저장
 
-## 6. 에이전트 모델
+## 6. 최소 에이전트 모델
 
-에이전트는 RAG, 공고 API, 진료기록 판단을 조합한다.
+DB 조회나 API 호출마다 에이전트를 만들지 않는다. 실행 순서 제어는 Orchestrator Runtime이 담당하고, 데이터 접근과 규칙 계산은 최소 권한 Tool로 둔다. LLM 추론이 필요한 역할만 에이전트로 유지한다.
 
-| 에이전트 | 역할 |
-|----------|------|
-| `OrchestratorAgent` | 전체 실행 순서 제어 |
-| `NoticeAgent` | Medi25 공고 API/크롤러 결과 조회 |
-| `CriteriaAgent` | 공고 기준 해석 |
-| `RagAgent` | Graph RAG와 표준문서 검색 |
-| `MedicalRecordAgent` | 환자정보/의사 소견서 근거 판단 |
-| `QuestionAgent` | 부족한 정보에 대한 질문 생성, 최대 5개 제한 |
-| `DebateAgent` | `UNKNOWN` 기준에 대해 A2A 토론 |
-| `VerifierAgent` | 모델 판단 검증 및 최종 상태 확정 |
+| 구성 요소 | 분류 | 역할 |
+|----------|------|------|
+| `ScreeningOrchestrator` | Runtime | 전체 실행 순서, Tool Gateway, 감사 로그 제어 |
+| `IntakeAgent` | Agent | 환자 자유 입력을 임상 이벤트 후보로 정규화 |
+| `EvidenceGatheringAgent` | Agent | 부족한 근거에 필요한 RAG/타임라인 Tool 호출 계획 |
+| `CriterionJudgeAgent` | Agent | 공고 기준과 근거를 비교해 `OK`, `NOT_OK`, `UNKNOWN` 제안 |
+| `EvidenceVerifier` | Agent | Judge 제안의 출처·시점·단위·규칙 일치 여부 검증 |
+| `QuestionAgent` | Agent | 부족 정보 질문 생성, 최대 5개 제한 |
+| `UnknownDeliberation` | Agent | `UNKNOWN`을 2라운드 교차 검토하고 추천 생성 |
+| `ResultExplanationAgent` | Agent | 추천 결과와 사전 부적합 사유를 대상별로 설명 |
+| 공고·기준 조회 | Tool | `get_trial_notice`, `get_trial_criteria` |
+| 환자 근거 조회 | Tool | `search_rag_evidence`, `query_timeline_graph` |
+| 규칙 평가 | Tool | `evaluate_rule` |
+
+제거한 역할:
+
+- `NoticeAgent`, `CriteriaAgent`: Source of Truth JSON을 읽는 결정론적 Tool로 충분하다.
+- `RagAgent`, `MedicalRecordAgent`: `EvidenceGatheringAgent`가 두 조회 Tool을 선택 호출한다.
+- `RejectionReasonAgent`: `ResultExplanationAgent`와 출력 책임이 중복된다.
 
 ### 에이전트 오케스트레이션 상세
 
@@ -548,23 +555,20 @@ RAG는 그래프 기반으로 구축한다. 단순 문서 검색이 아니라 �
 sequenceDiagram
     participant UI as User/Admin UI
     participant API as Matching API
-    participant ORCH as OrchestratorAgent
-    participant NOTICE as NoticeAgent
-    participant RAG as RagAgent
-    participant RECORD as MedicalRecordAgent
+    participant ORCH as ScreeningOrchestrator
+    participant TOOL as Criteria/Evidence Tools
     participant LLM as Bedrock LLM
-    participant VERIFY as VerifierAgent
+    participant VERIFY as EvidenceVerifier
+    participant D as UnknownDeliberation
     participant Q as QuestionAgent
-    participant DB as DB/S3/Neptune
+    participant DB as DB/S3/Bedrock GraphRAG
 
     UI->>API: Refresh 또는 매칭 시작
     API->>ORCH: run_id 생성 및 실행 요청
-    ORCH->>NOTICE: 최신 공고/기준 조회
-    NOTICE->>DB: TrialNotice/Criteria 조회
-    ORCH->>RECORD: 환자 임상 이벤트 조회
-    RECORD->>DB: PatientClinicalEvent 조회
-    ORCH->>RAG: 기준별 근거 검색
-    RAG->>DB: Bedrock KB/OpenSearch/Neptune 조회
+    ORCH->>TOOL: 최신 공고/기준 조회
+    TOOL->>DB: TrialNotice/Criteria 조회
+    ORCH->>TOOL: 환자 이벤트와 기준별 근거 조회
+    TOOL->>DB: PatientClinicalEvent/GraphRAG 조회
     ORCH->>LLM: 기준별 판단 요청
     LLM-->>ORCH: OK/NOT_OK/UNKNOWN 제안 JSON
     ORCH->>VERIFY: 근거/규칙 검증
@@ -572,8 +576,7 @@ sequenceDiagram
     ORCH->>DB: 명확한 OK/NOT_OK 결과 저장
     ORCH->>D: 애매한 UNKNOWN만 A2A 토론
     D-->>ORCH: 토론 종료 결과
-    ORCH->>Q: 남은 UNKNOWN 보완 질문 후보 생성
-    Q-->>ORCH: 검토용 질문 후보 JSON
+    ORCH->>D: 미합의 UNKNOWN은 Human Review로 종료
     ORCH->>DB: 추천 결과/보고서/A2A 로그 저장
     ORCH-->>API: 추천 결과 반환
 ```
@@ -585,7 +588,7 @@ sequenceDiagram
 3. 사용자의 관심 질환, 지역, 성별, 나이로 1차 후보를 좁힌다.
 4. 후보 임상시험별 선정/제외 기준을 불러온다.
 5. 환자 임상 이벤트와 의사 소견서 근거를 조회한다.
-6. Graph RAG에서 기준별 관련 근거를 가져온다.
+6. Graph RAG에서 기준별 환자 근거와 표준문서 근거를 가져온다.
 7. Bedrock LLM이 기준별 상태를 제안한다.
 8. Verifier가 근거 출처, 날짜, 단위, 기준 연산자를 검증한다.
 9. 앞단 재질문 후에도 남은 `UNKNOWN` 중 애매한 기준만 A2A 토론으로 넘긴다.
@@ -601,7 +604,7 @@ LLM이 직접 DB를 읽는 것이 아니라, 허용된 Tool을 통해서만 근�
 | `refresh_trial_notices` | `keyword`, `force_refresh` | 신규/변경 공고 목록 |
 | `get_trial_notice` | `trial_id` | 공고 정규화 JSON |
 | `get_trial_criteria` | `trial_id`, `criteria_version` | 선정/제외 기준 JSON |
-| `search_rag_evidence` | `patient_key`, `criterion_id`, `query` | 근거 문장 목록 |
+| `search_rag_evidence` | `patient_key`, `criterion_id`, `query` | 환자 근거/표준문서 문장 목록 |
 | `query_timeline_graph` | `patient_key`, `field`, `time_window` | 구조화 임상 이벤트 |
 | `evaluate_rule` | `criterion`, `observations` | 규칙 기반 판정 |
 | `save_matching_report` | `run_id`, `result_json` | 보고서 저장 위치 |
@@ -610,11 +613,10 @@ LLM이 직접 DB를 읽는 것이 아니라, 허용된 Tool을 통해서만 근�
 
 Tool 호출 권한:
 
-- `NoticeAgent`: 공고 API와 공고 DB만 접근한다.
-- `RagAgent`: RAG/Graph 검색만 접근한다.
-- `MedicalRecordAgent`: 비식별 환자 임상 이벤트만 접근한다.
-- `QuestionAgent`: 환자정보 기입 직후 부족 필드와 사용자 프로필 일부만 접근하고, 질문은 최대 5개만 생성한다.
-- `VerifierAgent`: 모든 근거 번들을 읽을 수 있지만 원본 개인정보는 읽지 않는다.
+- `ScreeningOrchestrator`만 Gateway를 통해 공고 기준 Tool과 저장 Tool을 호출한다.
+- `EvidenceGatheringAgent`에는 환자 근거 RAG와 비식별 임상 이벤트 조회 Tool만 노출한다.
+- `QuestionAgent`는 환자정보 기입 직후 부족 필드와 사용자 프로필 일부만 접근하고, 질문은 최대 5개만 생성한다.
+- `EvidenceVerifier`와 `UnknownDeliberation`은 조립된 근거 번들만 읽으며 DB Tool이나 원본 개인정보에 접근하지 않는다.
 
 ## 7. 판단 모델
 
@@ -707,7 +709,7 @@ Verifier 검증 항목:
 | LLM 제안이 `NOT_OK`이고 충돌 근거가 명확 | `NOT_OK` |
 | 근거가 없거나 날짜/단위가 부족 | `UNKNOWN` |
 | LLM 제안과 규칙 결과가 충돌 | A2A 토론 대상으로 분류 |
-| A2A 합의 가능 | 토론 결과를 추천 점수와 기준 상태에 반영 |
+| A2A 합의 가능 | 토론 결과를 추천 점수와 별도 추천 상태에 반영하되 규칙 상태는 보존 |
 | A2A 후에도 합의 불가 | Human Review |
 
 ## UNKNOWN 처리 모델
@@ -739,37 +741,25 @@ flowchart TD
 
 ## A2A 토론 모델
 
-A2A는 여러 역할의 에이전트가 같은 `UNKNOWN` 기준을 다른 관점에서 검토하는 구조다. A2A는 무한 재판정 루프가 아니라 제한된 토론 단계이며, 토론이 끝나면 추천 결과에 반영하거나 Human Review로 종료한다.
+A2A는 같은 `UNKNOWN` 기준을 두 역할이 교차 검토하는 구조다. 구현은 기준 수 최대 5개, 총 2라운드로 고정한다. 첫 번째 Bedrock 호출은 독립 근거 검토, 두 번째 호출은 반론 검토를 수행한다. 세 번째 LLM 심판은 두지 않고 결정론적 합의기가 결과를 정리한다.
 
 | 역할 | 관점 |
 |------|------|
-| `EvidenceAgent` | 환자 근거가 실제로 존재하는가 |
-| `CriteriaAgent` | 공고 기준 해석이 맞는가 |
-| `StandardAgent` | 표준문서/용어 매핑이 맞는가 |
-| `SkepticAgent` | 시간 범위, 단위, 근거 부족 문제가 있는가 |
-| `JudgeAgent` | 토론 결과를 정리하고 다음 액션을 결정 |
+| `EvidenceReviewer` | 공고 기준과 환자 근거를 독립적으로 비교 |
+| `ChallengeReviewer` | 첫 검토를 그대로 따르지 않고 출처·시점·단위·충돌을 재검토 |
+| 결정론적 합의기 | 두 추천과 실제 `source_id`를 검사해 `OK`, `NOT_OK`, `UNKNOWN` 추천 생성 |
 
 A2A 결과:
 
 ```json
 {
-  "debate_id": "debate_001",
   "criterion_id": "exc_pregnancy_001",
-  "initial_status": "UNKNOWN",
-  "final_recommendation": "USE_WITH_UNCERTAINTY",
-  "agents": [
-    {
-      "role": "EvidenceAgent",
-      "claim": "최근 임신 여부 기록이 없습니다.",
-      "confidence": 0.82
-    },
-    {
-      "role": "SkepticAgent",
-      "claim": "기록 부재만으로 임신 아님을 확정할 수 없습니다.",
-      "confidence": 0.91
-    }
-  ],
-  "recommendation_action": "추천 결과에는 남기되 해당 기준은 UNKNOWN으로 표시하고 검토 필요로 태깅합니다."
+  "recommendation": "UNKNOWN",
+  "agreement": true,
+  "grounded": false,
+  "advocate": "UNKNOWN",
+  "skeptic": "UNKNOWN",
+  "source_ids": []
 }
 ```
 
@@ -777,10 +767,16 @@ A2A 종료 규칙:
 
 | 조건 | 종료 처리 |
 |------|-----------|
-| 토론 결과가 `OK` 또는 `NOT_OK`로 합의됨 | 추천 점수와 기준 상태에 반영 |
+| 두 역할이 `OK` 또는 `NOT_OK`로 합의하고 실제 출처 ID를 인용 | 토론 추천에 반영하되 규칙의 최종 기준 상태는 덮어쓰지 않음 |
 | 근거는 부족하지만 치명적 제외 기준은 아님 | `UNKNOWN`으로 남기고 추천 결과에 불확실성 표시 |
 | 제외 기준 가능성이 있는데 근거 부족 | Human Review Queue |
-| 제한 라운드 초과 | Human Review Queue |
+| 두 역할이 불일치하거나 출처 ID가 유효하지 않음 | `UNKNOWN` 유지 후 질문 또는 Human Review |
+
+토론은 Verifier로 돌아가지 않는다. 두 모델 호출이 끝나면 항상 종료하며 토론 추천과 최종 규칙 판정을 분리해 저장한다.
+
+구현 상한은 공고당 최대 5개 기준, 정확히 2라운드다. 검토 우선순위는
+`REVIEW_REQUIRED` → `CONFLICTING` → 제외 기준 `UNKNOWN` → 나머지 `UNKNOWN`이다.
+두 역할의 결론이 같고 입력에 존재하는 `source_id`를 인용한 경우만 합의로 인정한다.
 
 ## 최종 추천 결과
 
@@ -819,6 +815,21 @@ A2A 종료 규칙:
 }
 ```
 
+현재 API 계약:
+
+| Method | Path | 역할 |
+|--------|------|------|
+| `POST` | `/api/v1/recommendations/run` | 선택한 공고 또는 전체 공고를 판정하고 상위 후보 반환 |
+| `GET` | `/api/v1/recommendations/{recommendation_id}` | 저장된 추천 JSON 재조회 |
+
+정렬 규칙은 `OK` → `UNKNOWN` → `NOT_OK` 순서다. `NOT_OK`는
+`excluded_trials`로 분리하고 추천 목록에 넣지 않는다. 같은 판정 안에서는 기준별
+결정론적 점수 평균을 사용하며, A2A 합의는 실제 출처로 그라운딩된 경우만 반영한다.
+따라서 모델 응답 순서나 모델이 임의 생성한 숫자가 최종 순위를 결정하지 않는다.
+API는 규칙의 `screening_decision`과 A2A를 반영한 `recommendation_decision`을
+분리해 반환한다. A2A `NOT_OK` 합의는 추천에서 제외할 수 있지만 규칙 판정 이력은
+`UNKNOWN` 그대로 보존된다.
+
 ## Amazon Bedrock 사용 계획
 
 | 기능 | Bedrock 사용 |
@@ -826,8 +837,9 @@ A2A 종료 규칙:
 | 공고 기준 추출 | Bedrock Converse API |
 | 환자정보/의사 소견서 자유서술 해석 | Bedrock Converse API |
 | 질문 생성 | Bedrock Converse API |
-| RAG 검색 | Bedrock Knowledge Bases |
-| 임베딩 | Amazon Titan Embeddings |
+| RAG 검색/그래프 | Bedrock Knowledge Bases GraphRAG + Neptune Analytics |
+| 임베딩 | Amazon Titan Text Embeddings v2 |
+| 그래프 구성 | Amazon Nova 기반 chunk entity extraction |
 | 안전장치 | Bedrock Guardrails |
 | 에이전트 오케스트레이션 | Bedrock Agents 또는 자체 Orchestrator |
 
@@ -838,11 +850,11 @@ A2A 종료 규칙:
 3. 환자정보 임상 이벤트 JSON 스키마 확정
 4. 임상시험 기준 JSON 스키마 확정
 5. `OK`, `NOT_OK`, `UNKNOWN` 판정 규칙 정의
-6. Graph RAG 노드/엣지 모델 정의
+6. 환자별 GraphRAG 문서/metadata 및 검색 필터 계약 정의
 7. Bedrock tool-use 에이전트 계약 정의
 8. `UNKNOWN` 질문 생성 모델 구현
-9. A2A 토론 결과 JSON 구현
-10. 최종 추천 결과 API 구현
+9. A2A 토론 결과 JSON 구현 (완료: 최대 5개 기준, 2라운드)
+10. 최종 추천 결과 API 구현 (완료: 실행·저장·재조회)
 
 ## 설계 원칙
 

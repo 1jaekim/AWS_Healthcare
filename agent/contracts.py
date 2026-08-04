@@ -65,6 +65,7 @@ class Observation(Protocol):
     value: float | str | bool | None
     unit: str | None
     observed_at: str | None
+    source: str
     source_id: str
     detail: str | None
 
@@ -91,8 +92,12 @@ class CriterionRule(Protocol):
     criterion_id: str
     criterion_type: str
     field_name: str
-    label: str
+    operator: str
+    value_low: str | None
+    value_high: str | None
     unit: str | None
+    label: str
+    time_window_days: int | None
 
     def expected_repr(self) -> str:
         """기준 조건을 사람이 읽을 수 있는 문자열로 만든다."""
@@ -103,12 +108,17 @@ class EvidenceBundle(Protocol):
     """조건 · 관찰값 · 원문 · 출처를 묶은 검증 입력 단위."""
 
     rule: CriterionRule
+    observations: Sequence[Observation]
     narrative: Sequence[NarrativeSnippet]
     outcome: RuleOutcome | None
 
     @property
     def primary_observation(self) -> Observation | None:
         """규칙 판정에 사용한 대표 관찰값."""
+        ...
+
+    def source_ids(self) -> list[str]:
+        """이 번들이 참조한 모든 출처 ID."""
         ...
 
 
@@ -137,6 +147,8 @@ class CriterionResult(Protocol):
     observed_at: str | None
     confidence: float
     source_ids: tuple[str, ...]
+    narrative: Sequence[NarrativeSnippet]
+    conflicts: tuple[str, ...]
 
 
 class AggregateOutcome(Protocol):
@@ -146,6 +158,9 @@ class AggregateOutcome(Protocol):
     decision_label: str
     criteria_total: int
     criteria_met: int
+
+    @property
+    def screening_decision(self) -> str: ...
 
 
 class CriterionPlan(Protocol):
@@ -174,6 +189,7 @@ class ToolContext(Protocol):
     trial_id: str
     index_encounter_id: str
     index_date: str
+    patient_key: str | None
 
 
 class Explanation(Protocol):
@@ -212,6 +228,8 @@ class AgentSettings(Protocol):
     max_tokens: int
     temperature: float
     max_agent_iterations: int
+    max_deliberation_criteria: int
+    criterion_judge_enabled: bool
     guardrail_id: str | None
     guardrail_version: str
 

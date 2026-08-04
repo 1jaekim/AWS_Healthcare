@@ -96,6 +96,8 @@ class EvidenceGatheringAgent:
                     "MODEL",
                     iteration=iteration,
                     mode=getattr(self._model, "mode", "unknown"),
+                    prompt=EVIDENCE_PLANNER.label,
+                    prompt_checksum=EVIDENCE_PLANNER.checksum,
                 ) as attributes:
                     response = self._model.converse(
                         conversation=conversation,
@@ -239,12 +241,13 @@ class EvidenceGatheringAgent:
             self._term_index[item["criterion_id"]] = tuple(item["terms"])
         payload = {
             "task": "plan",
-            "person_id": context.person_id,
             "trial_id": context.trial_id,
             "index_date": context.index_date,
             "pending_narrative": pending,
             "missing_observations": missing,
         }
+        if context.patient_key:
+            payload["patient_key"] = context.patient_key
         return (
             "다음은 현재 근거 수집 상태다. 추가로 필요한 근거가 있으면 도구를 "
             "호출하고, 없으면 done 만 반환하라.\n\n"

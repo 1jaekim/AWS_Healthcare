@@ -6,6 +6,7 @@ DynamoDB screening_executions 테이블로 교체할 지점.
 
 from __future__ import annotations
 
+import copy
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -32,6 +33,8 @@ class Answer:
     value: str
     submitted_by: str
     submitted_at: str
+    events: list[dict[str, Any]] = field(default_factory=list)
+    """Intake 가 정규화한 이벤트. 원문(`value`)은 그대로 두고 해석을 함께 보관한다."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -43,6 +46,7 @@ class Answer:
             "value": self.value,
             "submitted_by": self.submitted_by,
             "submitted_at": self.submitted_at,
+            "events": list(self.events),
         }
 
 
@@ -94,10 +98,15 @@ class RunStore:
         self._answers: dict[str, list[Answer]] = {}
         self._tickets: dict[str, ReviewTicket] = {}
         self._latest: dict[tuple[int, str], str] = {}
+        self._recommendations: dict[str, dict[str, Any]] = {}
 
     @staticmethod
     def new_run_id() -> str:
         return f"RUN-{uuid.uuid4().hex[:16]}"
+
+    @staticmethod
+    def new_recommendation_id() -> str:
+        return f"REC-{uuid.uuid4().hex[:16]}"
 
     def save_run(self, run: ScreeningRun) -> None:
         self._runs[run.run_id] = run
@@ -120,6 +129,17 @@ class RunStore:
 
     def get_artifacts(self, run_id: str) -> RunArtifacts | None:
         return self._artifacts.get(run_id)
+
+    def save_recommendation(
+        self, recommendation_id: str, payload: dict[str, Any]
+    ) -> None:
+        self._recommendations[recommendation_id] = copy.deepcopy(payload)
+
+    def get_recommendation(
+        self, recommendation_id: str
+    ) -> dict[str, Any] | None:
+        payload = self._recommendations.get(recommendation_id)
+        return copy.deepcopy(payload) if payload is not None else None
 
     def latest_run_id(self, person_id: int, trial_id: str) -> str | None:
         return self._latest.get((person_id, trial_id))
@@ -147,6 +167,7 @@ class RunStore:
         value: str,
         submitted_by: str,
         request_id: str | None = None,
+        events: list[dict[str, Any]] | None = None,
     ) -> Answer:
         answer = Answer(
             answer_id=f"ANS-{uuid.uuid4().hex[:12]}",
@@ -157,6 +178,7 @@ class RunStore:
             value=value,
             submitted_by=submitted_by,
             submitted_at=_now(),
+            events=list(events or []),
         )
         self._answers.setdefault(run_id, []).append(answer)
         return answer
@@ -221,6 +243,7 @@ class RunStore:
             "runs": len(self._runs),
             "answers": sum(len(items) for items in self._answers.values()),
             "review_tickets": len(self._tickets),
+            "recommendations": len(self._recommendations),
             "pending_reviews": sum(
                 1 for item in self._tickets.values() if item.status == "PENDING"
             ),

@@ -10,6 +10,7 @@ from agent.toolspec import tool_names
 from .config import settings
 from .container import Container, build_container
 from .orchestration.runtime import PatientNotFound, TrialNotFound
+from .reasoning.supplements import SupplementBuilder
 from .repository import DatasetRepository
 from .schemas import (
     AnswerRequest,
@@ -25,6 +26,8 @@ from .schemas import (
     IntakeResultOut,
     PatientDetail,
     PatientListResponse,
+    RecommendationRunRequest,
+    RecommendationRunResponse,
     ReviewDecisionRequest,
     ReviewTicketOut,
     ScreeningRequest,
@@ -88,14 +91,18 @@ def root() -> dict[str, str]:
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])
-def health(repository: Repository) -> dict:
+def health(container: Ctx) -> dict:
     return {
         "status": "ok",
         "service": settings.app_name,
         "version": settings.app_version,
-        "data_counts": repository.counts(),
-        "rag_status": "not_configured",
-        "graph_status": "not_configured",
+        "data_counts": container.repository.counts(),
+        "rag_status": container.retrieval_mode,
+        "graph_status": (
+            "configured"
+            if container.retrieval_mode == "bedrock_graphrag"
+            else "not_configured"
+        ),
     }
 
 
@@ -118,6 +125,13 @@ def architecture(container: Ctx) -> dict:
         "stores": container.run_store.counts(),
         "audit_events": container.audit.size,
         "agent": agent_status,
+        "retrieval": {
+            "tool": "evidence_retrieval_tool",
+            "mode": container.retrieval_mode,
+            "patient_key_filter_required": (
+                container.retrieval_mode == "bedrock_graphrag"
+            ),
+        },
     }
 
 
@@ -190,6 +204,7 @@ def _run_response(container: Container, output) -> dict:
         "index_encounter_id": output.run.index_encounter_id,
         "index_date": output.run.index_date,
         "eligibility_status": str(outcome.eligibility_status),
+        "screening_decision": outcome.screening_decision,
         "decision_label": outcome.decision_label,
         "criteria_total": outcome.criteria_total,
         "criteria_met": outcome.criteria_met,
@@ -199,12 +214,22 @@ def _run_response(container: Container, output) -> dict:
         "review_ticket_id": output.review_ticket_id,
         "mode": output.run.metadata.get("mode", "deterministic"),
         "agent": output.run.metadata.get("agent", {}),
+        "deliberation": output.run.metadata.get("deliberation", {}),
+        "judgment": output.run.metadata.get("judgment", {}),
         "packet": output.packet,
         "requests": output.requests,
         "explanations": output.explanations,
         "trace": output.trace_summary,
         "limitations": _LIMITATIONS,
     }
+
+
+def _screening_decision(eligibility_status: str | None) -> str:
+    if eligibility_status == "ELIGIBLE":
+        return "OK"
+    if eligibility_status == "INELIGIBLE":
+        return "NOT_OK"
+    return "UNKNOWN"
 
 
 @app.post(
@@ -256,6 +281,7 @@ def get_screening(run_id: str, container: Ctx) -> dict:
         "index_encounter_id": run.index_encounter_id,
         "index_date": run.index_date,
         "eligibility_status": run.eligibility_status,
+        "screening_decision": _screening_decision(run.eligibility_status),
         "decision_label": packet.get("decision_label", ""),
         "criteria_total": packet.get("criteria_total", 0),
         "criteria_met": packet.get("criteria_met", 0),
@@ -272,12 +298,76 @@ def get_screening(run_id: str, container: Ctx) -> dict:
         ),
         "mode": run.metadata.get("mode", "deterministic"),
         "agent": run.metadata.get("agent", {}),
+        "deliberation": run.metadata.get("deliberation", {}),
+        "judgment": run.metadata.get("judgment", {}),
         "packet": packet,
         "requests": artifacts.requests,
         "explanations": artifacts.explanations,
         "trace": container.trace.summary_for(run_id),
         "limitations": _LIMITATIONS,
     }
+
+
+@app.post(
+    "/api/v1/recommendations/run",
+    response_model=RecommendationRunResponse,
+    tags=["recommendations"],
+)
+def run_recommendations(
+    payload: RecommendationRunRequest, container: Ctx
+) -> dict:
+    """후보 공고를 모두 판정하고 제한형 A2A 결과까지 반영해 순위를 만든다."""
+    if payload.person_id not in container.repository.patients:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Patient not found",
+        )
+
+    trial_ids = list(
+        dict.fromkeys(payload.trial_ids or sorted(container.repository.trials))
+    )
+    missing = [
+        trial_id
+        for trial_id in trial_ids
+        if trial_id not in container.repository.trials
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"message": "Trial not found", "trial_ids": missing},
+        )
+
+    try:
+        return container.recommendation_orchestrator.run(
+            person_id=payload.person_id,
+            trial_ids=trial_ids,
+            top_k=payload.top_k,
+            actor=payload.actor,
+        )
+    except PatientNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except TrialNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+
+
+@app.get(
+    "/api/v1/recommendations/{recommendation_id}",
+    response_model=RecommendationRunResponse,
+    tags=["recommendations"],
+)
+def get_recommendations(recommendation_id: str, container: Ctx) -> dict:
+    """저장된 추천 결과를 재조회한다."""
+    payload = container.run_store.get_recommendation(recommendation_id)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recommendation not found",
+        )
+    return payload
 
 
 @app.get(
@@ -413,6 +503,8 @@ def submit_answer(person_id: int, payload: AnswerRequest, container: Ctx) -> dic
         reference_date=run.index_date,
         run_id=payload.run_id,
     )
+    # 정규화 결과를 답변에 붙여 둔다. 재판정이 이 이벤트를 관찰값으로 승격한다.
+    answer.events = [item.to_dict() for item in intake.events]
     container.audit.record(
         "ANSWER_SUBMITTED",
         actor=payload.submitted_by,
@@ -425,6 +517,55 @@ def submit_answer(person_id: int, payload: AnswerRequest, container: Ctx) -> dic
         intake_needs_review=intake.needs_review,
     )
     return {**answer.to_dict(), "intake": intake.to_dict()}
+
+
+@app.post(
+    "/api/v1/screening/{run_id}/rerun",
+    response_model=ScreeningRunResponse,
+    tags=["screening"],
+)
+def rerun_screening(run_id: str, container: Ctx, actor: str = "system") -> dict:
+    """제출된 답변을 반영해 다시 판정한다.
+
+    답변에 딸린 Intake 이벤트 중 기준 필드로 연결된 것을 관찰값으로 승격해
+    그래프에 값이 없던 필드를 채운다. 기록으로 확인된 값은 덮어쓰지 않는다.
+
+    참여자 진술은 판정을 확정하지 않는다. 미해소(UNKNOWN) 기준이 검토 필요
+    (REVIEW_REQUIRED)로 올라가고, 적합·부적합 확정은 연구 담당자가 한다.
+    """
+    run = container.run_store.get_run(run_id)
+    if run is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Run not found"
+        )
+
+    answers = container.run_store.answers_for(run_id)
+    if not answers:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="No answers submitted for this run",
+        )
+
+    supplements = SupplementBuilder().from_answers(answers)
+    try:
+        output = container.orchestrator.run(
+            person_id=run.person_id,
+            trial_id=run.trial_id,
+            actor=actor,
+            supplements=supplements.observations,
+        )
+    except (PatientNotFound, TrialNotFound) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+
+    body = _run_response(container, output)
+    body["supplements"] = {
+        **supplements.to_dict(),
+        **output.run.metadata.get("supplements", {}),
+        "source_run_id": run_id,
+    }
+    return body
 
 
 @app.post(

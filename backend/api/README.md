@@ -5,7 +5,7 @@
 
 - v0.1 — 데이터셋에 저장된 판정 스냅샷을 그대로 반환
 - v0.2 — 판정을 직접 계산하는 결정론적 오케스트레이터
-- v0.3 — Bedrock FM 에이전트 계층 추가 (근거 수집 판단, NLI 검증, 설명·질문 생성)
+- v0.3 — Bedrock FM 에이전트 계층 추가 (근거 수집 판단, 기준별 판단, 설명·질문 생성)
 
 AWS 서비스 연결 전이므로 Knowledge Bases / Neptune / DynamoDB 자리는 로컬 어댑터가
 동일한 계약으로 채우고 있습니다.
@@ -56,7 +56,7 @@ cd backend/api
 | 3. 오케스트레이션 | `app/orchestration/` | Runtime, Criterion Router, Tool Gateway |
 | 4. 전문 Tool | `app/tools/` | Criteria, Evidence Retrieval, Timeline Graph, Rule Evaluator |
 | 5. 데이터 | `app/repository.py` | 로컬 CSV/JSONL 어댑터 |
-| 6. 근거 검증·취합 | `app/reasoning/` | Evidence Bundle, Verifier, Deterministic Aggregator |
+| 6. 근거 검증·취합 | `app/reasoning/` | Evidence Bundle, Verifier, Judgment Verifier, Rule Aggregator, Deterministic Aggregator |
 | 7. 상태 모델 | `app/domain/states.py` | 기준별 5가지 상태 |
 | 8. 결과 생성 | `app/actions/` | Cohort Selector, Evidence Packet, Next-Best-Evidence, Explanation |
 | 9. 저장·응답 | `app/persistence/` | Run Store, 감사 로그 |
@@ -81,6 +81,8 @@ cd backend/api
 |---|---|
 | 어떤 근거를 더 모을지 판단 | **FM** (tool-use 루프) |
 | 근거와 조건의 관계 판정 (NLI) | **FM** (제안만) |
+| 기준별 `OK`·`NOT_OK`·`UNKNOWN` 제안 | **FM** (제안만) |
+| 판단 검증 7항목, 최종 상태 확정 | 규칙 (`JudgmentVerifier` + `RuleAggregator`) |
 | 설명 문장 생성 | **FM** |
 | 확인 질문 문장 작성 | **FM** |
 | 수치·기간 계산 | 규칙 (`RuleEvaluator`) |
@@ -106,10 +108,51 @@ FM은 적격성을 결정하지 않습니다. 판정을 모델에 맡기면 같�
 판정과 저장에 닿는 도구는 노출하지 않습니다. 모델이 호출을 요청해도 화이트리스트에서
 걸러지고, 통과한 호출도 Gateway 권한 검사를 다시 받습니다.
 
-### 모델이 규칙과 다른 결론을 내면
+### 기준별 판단 → 검증 → 확정
 
-`REVIEW_REQUIRED` 로 올리고 사람에게 넘깁니다. 어느 한쪽을 조용히 채택하지 않습니다.
-신뢰도가 0.55 아래인 긍정·부정 판정도 검토로 돌립니다.
+기준 한 건은 `LLM 판단 → Judgment Verifier → Rule Aggregator` 순서로 지나갑니다
+(`agent/judge.py`, `app/reasoning/judgment.py`, `app/reasoning/rule_aggregator.py`).
+
+모델에게 넘기는 입력은 `evaluate_trial_criterion` 페이로드입니다. 기준의 연산자·값·
+단위·`time_window_days` 와 `evidence_id` 가 붙은 근거 목록만 넣고, 직접 식별자는
+넣지 않습니다. 모델은 `OK`·`NOT_OK`·`UNKNOWN` 중 하나를 제안하고 사용한
+`used_evidence_ids` 를 함께 반환합니다.
+
+Verifier는 그 제안을 일곱 항목으로 검사합니다. 검사 결과는 실행 응답의
+`judgment.items[].verification.checks` 에 그대로 남습니다.
+
+| 검사 | ID | 실패하면 |
+|---|---|---|
+| 근거 존재 | `V-EVIDENCE` | 인용한 출처가 근거 목록에 없거나, 인용 없이 확정하려 함 |
+| 시간 범위 | `V-WINDOW` | 관찰 시점이 없거나 기준 기간을 벗어남 |
+| 단위 | `V-UNIT` | 기준 단위와 관찰 단위가 다름 |
+| 연산자 | `V-OPERATOR` | 규칙 계산과 판단 방향이 반대 |
+| 기준 유형 | `V-TYPE` | 선정·제외 기준의 의미가 뒤집힘 |
+| 개인정보 | `V-PII` | 출력에 직접 식별자 형식이 섞임 |
+| 신뢰도 | `V-CONFIDENCE` | 확신도 0.55 미만으로 확정하려 함 |
+
+Rule Aggregator가 최종 상태와 후속 경로를 정합니다.
+
+| 상황 | 상태 | 경로 |
+|---|---|---|
+| 판단과 규칙이 일치하고 검증 통과 | `OK` / `NOT_OK` | `DECIDED` |
+| 판단과 규칙이 정면 충돌 | `UNKNOWN` | `A2A` |
+| 근거·출처·개인정보 검증 실패 | `UNKNOWN` | `HUMAN_REVIEW` |
+| 제외 기준인데 근거 부족 | `UNKNOWN` | `HUMAN_REVIEW` |
+| 선정 기준의 날짜·단위·확신도 부족 | `UNKNOWN` | `DECIDED` (확인 질문) |
+| 규칙은 판정했으나 모델이 보류 | 규칙 판정 유지 | `DECIDED` (확신도 하향) |
+| 규칙이 판정 못했는데 모델이 확정 주장 | `UNKNOWN` | `A2A` |
+
+규칙 판정이 판정 원본입니다. 모델이 규칙보다 강한 결론을 내려도 상태를 올리지 않고,
+충돌이면 교차 검토나 사람 검토로 넘깁니다. 놓친 제외 기준은 되돌릴 수 없으므로
+제외 기준의 근거 부족은 확인 질문으로 미루지 않고 사람 검토로 보냅니다.
+
+`CRITERION_JUDGE_ENABLED=false` 로 끄면 기존 FM NLI 검증기(`agent/verifier.py`)
+경로를 사용합니다. 그때는 모델이 규칙과 반대 결론을 내면 `REVIEW_REQUIRED` 로
+올립니다. 두 경로 모두 상태 확정은 결정론적 계층이 하므로 재현성은 같습니다.
+
+기준별 판단 결과는 실행 응답의 `judgment`, 감사 로그의 `CRITERION_JUDGED`,
+Trace의 `reason:judge` · `model:criterion_judge` 스팬에 남습니다.
 
 ### 폴백
 
@@ -150,7 +193,12 @@ POST /api/v1/intake/normalize
 | `BEDROCK_MODEL_ID` | `anthropic.claude-3-5-sonnet-20241022-v2:0` | 모델 |
 | `BEDROCK_MAX_TOKENS` | `1024` | 응답 상한 |
 | `AGENT_MAX_ITERATIONS` | `4` | tool-use 루프 상한 |
+| `CRITERION_JUDGE_ENABLED` | `true` | 기준별 판단 → Verifier → Rule Aggregator 경로 사용 |
+| `A2A_MAX_CRITERIA` | `5` | 2라운드 교차 검토 대상 기준 수 상한 |
 | `BEDROCK_GUARDRAIL_ID` | 없음 | Bedrock Guardrails 연결 |
+| `KNOWLEDGE_BASE_ID` | 없음 | 설정하면 `evidence_retrieval_tool`이 Bedrock GraphRAG Retrieve 사용 |
+| `PATIENT_PSEUDONYM_SECRET` | 없음 | 로컬 개발용 HMAC 키 |
+| `PATIENT_PSEUDONYM_SECRET_ARN` | 없음 | 운영 환경 Secrets Manager HMAC 키 ARN |
 
 `temperature` 는 0으로 고정되어 있습니다.
 
@@ -159,6 +207,12 @@ Bedrock을 켰지만 클라이언트 생성이 실패하면 스텁으로 내려�
 
 실행 응답의 `mode` 필드로 어느 경로를 탔는지 확인할 수 있습니다
 (`deterministic` / `agent:bedrock` / `agent:stub`).
+
+`KNOWLEDGE_BASE_ID`를 설정하면 `EvidenceGatheringAgent`의
+`evidence_retrieval_tool` 호출이 Bedrock Knowledge Base `Retrieve`로 연결됩니다.
+이 모드에서는 HMAC 키 설정이 반드시 필요하며 모든 요청에 비식별 `patient_key`와
+`document_type=patient_evidence` 필터를 강제합니다. 설정이 빠지면 로컬 검색으로
+조용히 폴백하지 않고 컨테이너 구성을 실패시킵니다.
 
 ## 판정 상태
 
@@ -173,6 +227,20 @@ Bedrock을 켰지만 클라이언트 생성이 실패하면 스텁으로 내려�
 | `REVIEW_REQUIRED` | 자동 판정 신뢰도 낮음 | 검토 큐 |
 
 종합 판정 우선순위는 `INELIGIBLE > REVIEW_REQUIRED > NEEDS_MORE_EVIDENCE > ELIGIBLE` 입니다.
+API의 `screening_decision`은 이를 `OK`, `NOT_OK`, `UNKNOWN`으로 단순화합니다.
+
+`UNKNOWN`, `CONFLICTING`, `REVIEW_REQUIRED` 기준은 Bedrock이 켜진 경우 검토자와
+반론자가 각 한 번씩 교차 검토합니다. 두 역할이 같은 결론을 내고 실제 입력의
+`source_id`를 인용한 경우에만 `OK` 또는 `NOT_OK` 추천을 기록합니다. 이 추천은
+결정론적 최종 상태를 덮어쓰지 않으며 불일치·근거 부재는 항상 `UNKNOWN`으로 끝납니다.
+교차 검토는 공고당 최대 5개 기준, 정확히 2라운드에서 종료합니다. 종료 후에도
+`UNKNOWN`이면 다시 Verifier로 순환하지 않고 Human Review Queue에 기록합니다.
+
+여러 공고 추천은 각 공고의 스크리닝을 독립 실행한 뒤 결정론적으로 정렬합니다.
+확정 `NOT_OK`는 추천에서 제외하고, 나머지는 `OK` 우선, `UNKNOWN` 차순으로 정렬합니다.
+A2A 합의는 그라운딩된 경우에만 추천 점수에 반영하며 원래 판정은 보존합니다.
+응답은 보존된 `screening_decision`과 추천 전용 `recommendation_decision`을 함께
+내보내므로 A2A가 추천 포함·제외에 미친 영향을 구분할 수 있습니다.
 
 ### 재현성
 
@@ -197,6 +265,24 @@ Bedrock을 켰지만 클라이언트 생성이 실패하면 스텁으로 내려�
 ```json
 { "person_id": 3, "trial_id": "SYN-T2D-INTENSIFY-01" }
 ```
+
+### 임상시험 추천
+
+| Method | Path | 설명 |
+|---|---|---|
+| `POST` | `/api/v1/recommendations/run` | 후보 공고 전체 판정, A2A 반영, 최적 후보 정렬 |
+| `GET` | `/api/v1/recommendations/{recommendation_id}` | 저장된 추천 결과 재조회 |
+
+```json
+{
+  "person_id": 3,
+  "trial_ids": ["SYN-T2D-INTENSIFY-01", "SYN-T2D-CARDIO-01"],
+  "top_k": 3
+}
+```
+
+추천 점수는 모델 생성값이 아니다. 확정 `OK=1.0`, 미해소 `UNKNOWN=0.4`,
+그라운딩된 A2A `OK` 합의는 `0.8`처럼 코드에 고정된 보수적 점수를 사용한다.
 
 ### 코호트
 
@@ -248,6 +334,9 @@ Rule Evaluator는 다른 Tool의 출력을 입력으로 받지만, 직접 호출
 
 - **Guardrails** — 의료적 확정 표현을 완화하고 위험 표현을 차단합니다. 출처 ID가 없는
   설명은 생성하지 않습니다 (Contextual Grounding).
+- **직접 식별자 검사** (`app/safety/pii.py`) — 모델 판단 출력에 주민번호·연락처·이메일·
+  내부 환자번호·호칭이 붙은 이름 형식이 섞이면 그 기준을 사람 검토로 보냅니다.
+  형식이 뚜렷한 유출을 막는 1차 방어선이며, 애초에 LLM 에는 `patient_key` 만 넘깁니다.
 - **감사 로그** — append-only 입니다. 상태가 바뀌면 기존 이벤트를 수정하지 않고 새 이벤트를
   추가합니다. `export_ndjson()` 은 Firehose 페이로드와 동일한 형태입니다.
 - **Observability** — 모든 Agent·Tool·Model 호출이 스팬으로 기록되고 지연시간이 집계됩니다.
@@ -270,7 +359,7 @@ Rule Evaluator는 다른 Tool의 출력을 입력으로 받지만, 직접 호출
 | 교체 대상 | 현재 | 목표 |
 |---|---|---|
 | `app/tools/criteria_tool.py` | CSV | DynamoDB Criteria Store |
-| `app/tools/evidence_retrieval.py` | 키워드 검색 | Bedrock KB + OpenSearch |
+| `app/tools/evidence_retrieval.py` | 로컬 키워드 또는 Bedrock KB Retrieve 어댑터 | Bedrock Knowledge Bases GraphRAG |
 | `app/tools/timeline_graph.py` | CSV | Amazon Neptune |
 | `agent/model.py` | 스텁 | Bedrock Converse (구현 완료, 미검증) |
 | `app/safety/guardrails.py` | 정규식 | Bedrock Guardrails (연결부 구현) |

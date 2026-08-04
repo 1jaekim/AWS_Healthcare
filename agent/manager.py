@@ -1,8 +1,8 @@
 """에이전트 계층 조립과 상태 관리.
 
 Screening Orchestrator 는 컨테이너에서 전체 실행 흐름에 붙지만, 모델 기반
-에이전트와 로컬 fallback 조립은 이 파일에서 한 번에 관리한다. Intake 처럼
-아직 구현 전인 에이전트도 상태 목록에 명시해 아키텍처 응답에서 빠지지 않게 한다.
+에이전트와 로컬 fallback 조립은 이 파일에서 한 번에 관리한다. 데이터 조회와
+규칙 계산은 Agent가 아니라 Gateway에 등록된 Tool로 둔다.
 """
 
 from __future__ import annotations
@@ -20,10 +20,13 @@ from .contracts import (
     ToolGateway,
     Tracer,
 )
+from .deliberation import UnknownDeliberationAgent
 from .intake import IntakeAgent
+from .judge import CriterionJudgeAgent
 from .loop import EvidenceGatheringAgent
 from .model import ModelClient, StubModelClient
 from .narration import ModelExplanationAgent, ModelNextBestEvidenceAgent
+from .prompts import prompt_versions
 from .toolspec import tool_names
 from .verifier import ModelEvidenceVerifier
 
@@ -56,6 +59,8 @@ class AgentStatus:
     guardrail_attached: bool
     fallback_reason: str | None = None
     managed_agents: list[ManagedAgentInfo] = field(default_factory=list)
+    prompts: list[dict[str, Any]] = field(default_factory=prompt_versions)
+    """사용 중인 프롬프트의 id·버전·체크섬. 어떤 프롬프트로 낸 판정인지 되짚기 위함."""
 
 
 @dataclass
@@ -66,8 +71,15 @@ class ManagedAgents:
     explainer: Any
     next_best: Any
     gatherer: EvidenceGatheringAgent | None
+    deliberator: UnknownDeliberationAgent | None
     intake: IntakeAgent
     status: AgentStatus
+    judge: CriterionJudgeAgent | None = None
+    """기준별 LLM 판단자.
+
+    붙어 있으면 오케스트레이터가 `LLM 판단 → Verifier → Rule Aggregator` 경로를
+    사용하고, `verifier` 는 규칙 판정만 담당한다.
+    """
 
 
 class AgentManager:
@@ -125,13 +137,24 @@ class AgentManager:
                 explainer=local_explainer,
                 next_best=local_next_best,
                 gatherer=None,
+                deliberator=None,
                 # Intake 는 규칙 추출기만으로 완결되므로 모델이 없어도 켜 둔다.
                 intake=self._build_intake(model=None),
                 status=status,
+                # 판단자도 모델 없이 켜 둔다. 규칙 판정을 그대로 승계하므로 상태는
+                # 바뀌지 않고, Verifier 와 Rule Aggregator 가 같은 경로를 돈다.
+                judge=self._build_judge(model=None),
             )
 
-        verifier = ModelEvidenceVerifier(
-            model=client, fallback=local_verifier, trace=self._trace
+        judge = self._build_judge(model=client)
+        # 판단자가 붙으면 기준별 모델 호출은 한 번이면 된다. NLI 검증기를 겹쳐
+        # 부르지 않고 규칙 판정만 맡긴다.
+        verifier = (
+            local_verifier
+            if judge is not None
+            else ModelEvidenceVerifier(
+                model=client, fallback=local_verifier, trace=self._trace
+            )
         )
         explainer = ModelExplanationAgent(
             model=client,
@@ -151,6 +174,11 @@ class AgentManager:
             trace=self._trace,
             max_iterations=self._config.max_agent_iterations,
         )
+        deliberator = UnknownDeliberationAgent(
+            model=client,
+            trace=self._trace,
+            max_criteria=self._config.max_deliberation_criteria,
+        )
         mode = f"agent:{getattr(client, 'mode', 'unknown')}"
         status = self._status(
             enabled=True,
@@ -163,9 +191,22 @@ class AgentManager:
             explainer=explainer,
             next_best=next_best,
             gatherer=gatherer,
+            deliberator=deliberator,
             intake=self._build_intake(model=client),
             status=status,
+            judge=judge,
         )
+
+    def _build_judge(
+        self, *, model: ModelClient | None
+    ) -> CriterionJudgeAgent | None:
+        """기준별 판단자를 조립한다.
+
+        설정으로 끄면 None 을 돌려주고, 호출자는 기존 NLI 검증기 경로를 쓴다.
+        """
+        if not getattr(self._config, "criterion_judge_enabled", True):
+            return None
+        return CriterionJudgeAgent(model=model, trace=self._trace)
 
     def _build_intake(self, *, model: ModelClient | None) -> IntakeAgent:
         """Intake 를 조립한다.
@@ -211,13 +252,23 @@ class AgentManager:
             max_iterations=self._config.max_agent_iterations,
             guardrail_attached=bool(self._config.guardrail_id),
             fallback_reason=fallback_reason,
-            managed_agents=self._managed_agent_info(enabled=enabled, mode=mode),
+            managed_agents=self._managed_agent_info(
+                enabled=enabled,
+                mode=mode,
+                judge_enabled=bool(
+                    getattr(self._config, "criterion_judge_enabled", True)
+                ),
+            ),
         )
 
     @staticmethod
-    def _managed_agent_info(*, enabled: bool, mode: str) -> list[ManagedAgentInfo]:
+    def _managed_agent_info(
+        *, enabled: bool, mode: str, judge_enabled: bool = True
+    ) -> list[ManagedAgentInfo]:
         model_backed = enabled
         gatherer_mode = mode if enabled else "disabled"
+        # 판단자가 켜지면 기준별 모델 호출은 판단자가 맡고, 검증기는 규칙만 돈다.
+        verifier_model_backed = model_backed and not judge_enabled
         return [
             ManagedAgentInfo(
                 name="screening_orchestrator",
@@ -226,15 +277,6 @@ class AgentManager:
                 mode=mode,
                 model_backed=False,
                 source="app/orchestration/runtime.py",
-            ),
-            ManagedAgentInfo(
-                name="rag_evidence_retrieval",
-                role="자유서술 EMR 문장 근거 검색",
-                enabled=True,
-                mode="local_keyword",
-                model_backed=False,
-                exposed_tools=["evidence_retrieval_tool"],
-                source="app/tools/evidence_retrieval.py",
             ),
             ManagedAgentInfo(
                 name="evidence_gathering_agent",
@@ -255,24 +297,45 @@ class AgentManager:
                 source="agent/intake.py",
             ),
             ManagedAgentInfo(
+                name="criterion_judge",
+                role="기준별 OK·NOT_OK·UNKNOWN 제안, 확정은 Rule Aggregator",
+                enabled=judge_enabled,
+                # 모델이 없으면 규칙 판정을 승계하므로 결정론적으로 동작한다.
+                mode=(
+                    (mode if enabled else "deterministic")
+                    if judge_enabled
+                    else "disabled"
+                ),
+                model_backed=model_backed and judge_enabled,
+                source="agent/judge.py",
+            ),
+            ManagedAgentInfo(
                 name="evidence_verifier",
                 role="근거와 기준의 지지·충돌·누락 검증",
                 enabled=True,
-                mode=mode,
-                model_backed=model_backed,
+                mode=mode if verifier_model_backed else "deterministic",
+                model_backed=verifier_model_backed,
                 source="agent/verifier.py",
             ),
             ManagedAgentInfo(
-                name="next_best_evidence",
-                role="정보가 부족한 기준의 다음 확인 질문 생성",
+                name="unknown_deliberation",
+                role="미해소 기준을 2라운드로 교차 검토해 OK·NOT_OK·UNKNOWN 추천",
+                enabled=enabled,
+                mode=gatherer_mode,
+                model_backed=model_backed,
+                source="agent/deliberation.py",
+            ),
+            ManagedAgentInfo(
+                name="question_agent",
+                role="정보 가치순으로 부족 정보 확인 질문 생성, 최대 5개",
                 enabled=True,
                 mode=mode,
                 model_backed=model_backed,
                 source="agent/narration.py",
             ),
             ManagedAgentInfo(
-                name="explanation_agent",
-                role="관리자·참여자별 판정 설명 생성",
+                name="result_explanation_agent",
+                role="추천 결과와 사전 부적합 사유를 관리자·참여자별로 설명",
                 enabled=True,
                 mode=mode,
                 model_backed=model_backed,

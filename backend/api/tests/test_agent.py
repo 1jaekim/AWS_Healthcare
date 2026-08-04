@@ -782,7 +782,8 @@ def test_agent_model_spans_recorded() -> None:
     model_spans = [s for s in spans if s["kind"] == "MODEL"]
     assert model_spans, "MODEL 스팬이 기록되지 않았습니다."
     names = {s["name"] for s in model_spans}
-    assert "model:nli_verifier" in names
+    assert "model:criterion_judge" in names
+    assert "model:nli_verifier" not in names
     assert "model:explanation" in names
 
 
@@ -795,14 +796,27 @@ def test_architecture_endpoint_reports_agent_status() -> None:
         body = client.get("/api/v1/architecture").json()
         assert "agent" in body
         assert body["agent"]["mode"] == "deterministic"
+        assert body["retrieval"] == {
+            "tool": "evidence_retrieval_tool",
+            "mode": "local_keyword",
+            "patient_key_filter_required": False,
+        }
         assert set(body["agent"]["exposed_tools"]) == {
             "evidence_retrieval_tool",
             "timeline_graph_tool",
         }
         managed = {item["name"]: item for item in body["agent"]["managed_agents"]}
         assert "screening_orchestrator" in managed
-        assert "rag_evidence_retrieval" in managed
         assert "intake_agent" in managed
+        assert "evidence_gathering_agent" in managed
+        assert "criterion_judge" in managed
+        assert "evidence_verifier" in managed
+        assert "unknown_deliberation" in managed
+        assert "question_agent" in managed
+        assert "result_explanation_agent" in managed
+        assert "rag_evidence_retrieval" not in managed
+        assert "rejection_reason_agent" not in managed
+        assert len(managed) == 8
         # Intake 는 규칙 추출기만으로 완결되므로 모델이 꺼져 있어도 동작한다.
         assert managed["intake_agent"]["enabled"] is True
         assert managed["intake_agent"]["mode"] == "deterministic"

@@ -2,9 +2,10 @@
 
 Medi25 모집공고, 관리자 수동 공고, 사용자 프로필, 환자정보 기입, 추가 설문을 하나의 워크플로우로 연결해 임상시험 추천 결과를 만드는 목표 아키텍처다.
 
-핵심은 세 가지다.
+핵심은 네 가지다.
 
 - 워크플로우 시작점이 명확해야 한다: `Refresh 모집공고`, `공고 추가`, `매칭 시작`
+- 모집공고의 선정/제외 기준은 `TrialCriteriaTable`의 JSON을 판정 Source of Truth로 사용한다.
 - 개인정보 JSON은 장기 저장 전에 ElastiCache로 빠르게 전달하고 TTL 기반으로 임시 처리한다.
 - 환자정보 기입 직후 LLM이 부족한 정보를 최대 5개까지만 먼저 질문하고, Bedrock LLM은 이후 기준별 판단을 제안한다.
 
@@ -38,26 +39,26 @@ flowchart TD
 
     subgraph STORE["저장소"]
         S3RAW["S3 raw<br/>환자정보/공고 원문"]
-        S3RAG["S3 rag<br/>비식별 문서"]
+        S3RAG["S3 rag<br/>비식별 환자근거/표준문서"]
         DDBTRIAL["DynamoDB<br/>TrialNoticeTable"]
         DDBCRITERIA["DynamoDB<br/>TrialCriteriaTable"]
         DDBUSER["DynamoDB<br/>UserProfileTable"]
         DDBEVENT["DynamoDB<br/>PatientClinicalEventTable"]
         DDBRUN["DynamoDB<br/>MatchingRun/Report"]
-        NEPTUNE["Amazon Neptune<br/>Graph RAG"]
-        OSS["OpenSearch Serverless"]
-        KB["Bedrock Knowledge Bases"]
+        KBGRAPH["Bedrock Knowledge Bases GraphRAG<br/>Neptune Analytics"]
     end
 
-    subgraph AGENT["Bedrock Agent Orchestration"]
-        ORCH["OrchestratorAgent"]
-        NOTICE["NoticeAgent"]
-        RAG["RagAgent"]
-        EMR["MedicalRecordAgent"]
-        CRIT["CriteriaAgent"]
+    subgraph AGENT["최소 Agent Orchestration"]
+        ORCH["ScreeningOrchestrator Runtime"]
+        INTAKE["IntakeAgent"]
+        GATHER["EvidenceGatheringAgent"]
         QGEN["QuestionAgent"]
-        A2A["A2A Debate Agents"]
-        VERIFY["Verifier / Rule Aggregator"]
+        VERIFY["EvidenceVerifier"]
+        A2A["UnknownDeliberation"]
+        EXPLAIN["ResultExplanationAgent"]
+        CTOOL["Criteria Tool"]
+        ETOOL["Evidence/Timeline Tools"]
+        RULE["Rule Evaluator Tool"]
     end
 
     subgraph OBS["운영/보안"]
@@ -91,29 +92,25 @@ flowchart TD
     SAN --> S3RAW
     SAN --> S3RAG
 
-    DDBTRIAL --> NEPTUNE
-    DDBCRITERIA --> NEPTUNE
-    DDBEVENT --> NEPTUNE
-    S3RAG --> KB
-    KB --> OSS
+    S3RAG --> KBGRAPH
 
-    API --> ORCH
-    ORCH --> NOTICE
-    ORCH --> RAG
-    ORCH --> EMR
-    ORCH --> CRIT
-    ORCH --> VERIFY
-    NOTICE --> DDBTRIAL
-    NOTICE --> DDBCRITERIA
-    RAG --> KB
-    RAG --> OSS
-    RAG --> NEPTUNE
-    EMR --> DDBEVENT
-    CRIT --> DDBCRITERIA
-    VERIFY --> QGEN
-    VERIFY --> A2A
+    API --> INTAKE
+    INTAKE --> QGEN
     QGEN --> API
+    API --> ORCH
+    ORCH --> CTOOL
+    ORCH --> GATHER
+    GATHER --> ETOOL
+    ORCH --> RULE
+    ORCH --> VERIFY
+    CTOOL --> DDBTRIAL
+    CTOOL --> DDBCRITERIA
+    ETOOL --> KBGRAPH
+    ETOOL --> DDBEVENT
+    VERIFY --> A2A
+    ORCH --> EXPLAIN
     A2A --> DDBRUN
+    EXPLAIN --> DDBRUN
     VERIFY --> DDBRUN
 
     ORCH --> GUARD
@@ -127,7 +124,7 @@ flowchart TD
 
 | 시작점 | 사용자 | 설명 | 결과 |
 |--------|--------|------|------|
-| `Refresh 모집공고` | 관리자/운영자 | Medi25 최신 모집공고를 가져와 DB와 인덱스를 갱신 | 공고 DB 최신화 |
+| `Refresh 모집공고` | 관리자/운영자 | Medi25 최신 모집공고를 가져와 공고/기준 JSON DB를 갱신 | 공고 DB 최신화 |
 | `공고 추가` | 관리자 | Medi25에 없거나 병원에서 별도 전달한 공고를 직접 등록 | 관리자 공고 등록 |
 | `매칭 시작` | 일반 사용자 | 로그인 후 프로필과 환자정보 기입을 기반으로 추천 실행 | 추천 결과/보고서 |
 
@@ -159,7 +156,7 @@ flowchart TD
     O --> P["관리자 검토"]
     P -->|승인| Q["ACTIVE 저장"]
     P -->|수정 필요| R["NEEDS_FIX"]
-    Q --> S["RAG/Graph 인덱스 갱신"]
+    Q --> S["TrialNotice/Criteria DB 활성화"]
 ```
 
 공고 상태:
@@ -176,7 +173,10 @@ flowchart TD
 
 - Medi25 자동 수집 공고와 관리자 추가 공고는 같은 테이블에 저장한다.
 - `source_type`으로 출처를 구분한다: `MEDI25`, `ADMIN_URL`, `ADMIN_FILE`, `ADMIN_MANUAL`
+- `TrialCriteriaTable`의 기준 JSON이 런타임 판정 원본이다.
 - 공고가 수정되면 기존 기준을 덮어쓰지 않고 `criteria_version`을 증가시킨다.
+- 공고 원문은 S3에 보존하지만, 런타임에서는 원문 Long Context가 아니라 검증된 기준 JSON을 사용한다.
+- RAG/Graph에는 공고 기준을 원본으로 넣지 않고, 환자 근거와 표준문서 검색 보조 계층으로 유지한다.
 - 관리자 추가/수정/승인/비활성화는 `AdminAuditLogTable`에 남긴다.
 
 ## 사용자 데이터 아키텍처
@@ -198,8 +198,8 @@ flowchart TD
     G --> I["임상 이벤트 정규화"]
     H --> J["계정/PII 저장소"]
     I --> K["PatientClinicalEventTable"]
-    I --> L["S3 rag 비식별 문서"]
-    I --> M["Neptune 환자 타임라인 그래프"]
+    I --> L["S3 rag/patients<br/>환자별 Markdown + metadata"]
+    L --> M["Bedrock KB GraphRAG 동기화"]
     F --> N["TTL 만료 후 삭제"]
 ```
 
@@ -231,40 +231,35 @@ ElastiCache 사용 정책:
 | ElastiCache for Redis | 수신 개인정보 JSON, 정규화 중간 결과 | 빠른 임시 처리 |
 | S3 `trials/raw/` | 공고 원문 HTML/PDF/문서 | 원본 보존 |
 | S3 `patient/raw/` | 의사 소견서/환자정보 원문 | 암호화 원본 보존 |
-| S3 `rag/` | 비식별 문서 chunk | Bedrock KB 소스 |
+| S3 `rag/patients/` | 환자별 비식별 Markdown + metadata sidecar | Bedrock GraphRAG 소스 |
 | DynamoDB `TrialNoticeTable` | 공고 목록, 상태, 출처 | 공고 조회 |
-| DynamoDB `TrialCriteriaTable` | 선정/제외 기준, 버전 | 기준 판정 |
+| DynamoDB `TrialCriteriaTable` | 선정/제외 기준, 버전 | 기준 판정 Source of Truth |
 | DynamoDB `UserProfileTable` | 관심 임상, 성별, 생년 등 | 1차 후보 필터 |
 | DynamoDB `PatientClinicalEventTable` | 검사, 진단, 약물, 설문 이벤트 | 구조화 근거 |
 | DynamoDB `MatchingRunTable` | 매칭 실행 이력 | 재조회/재실행 |
 | DynamoDB `MatchingReportTable` | 최종 보고서 메타데이터 | 사용자/관리자 조회 |
 | DynamoDB `AdminAuditLogTable` | 관리자 공고 변경 이력 | 감사 |
-| Amazon Neptune | 환자-이벤트-기준-표준문서 그래프 | Graph RAG |
-| OpenSearch Serverless | 벡터/키워드 인덱스 | RAG 검색 |
-| Bedrock Knowledge Bases | 비식별 문서 검색 | 근거 검색 |
+| Bedrock Knowledge Bases GraphRAG | 비식별 문서의 엔티티·관계·벡터 관리 | 근거 검색 |
+| Amazon Neptune Analytics | Bedrock이 관리하는 그래프/벡터 저장소 | GraphRAG 저장 계층 |
 
 ## 에이전트 오케스트레이션
 
 ```mermaid
 sequenceDiagram
     participant API as Matching API
-    participant ORCH as OrchestratorAgent
-    participant NOTICE as NoticeAgent
-    participant EMR as MedicalRecordAgent
-    participant RAG as RagAgent
+    participant ORCH as ScreeningOrchestrator
+    participant TOOL as Criteria/Evidence Tools
     participant LLM as Bedrock LLM
     participant VERIFY as Verifier
     participant Q as QuestionAgent
     participant D as DebateAgents
-    participant DB as DB/S3/Neptune
+    participant DB as DB/S3/Bedrock GraphRAG
 
     API->>ORCH: 매칭 실행 요청(run_id)
-    ORCH->>NOTICE: ACTIVE 공고/기준 조회
-    NOTICE->>DB: TrialNotice/Criteria 조회
-    ORCH->>EMR: 환자 임상 이벤트 조회
-    EMR->>DB: PatientClinicalEvent 조회
-    ORCH->>RAG: 기준별 근거 검색
-    RAG->>DB: Bedrock KB/OpenSearch/Neptune 조회
+    ORCH->>TOOL: ACTIVE 공고/기준 조회
+    TOOL->>DB: TrialNotice/Criteria 조회
+    ORCH->>TOOL: 환자 이벤트와 기준별 근거 조회
+    TOOL->>DB: PatientClinicalEvent/Bedrock GraphRAG 조회
     ORCH->>LLM: 기준별 판단 요청
     LLM-->>ORCH: proposed_status JSON
     ORCH->>VERIFY: 근거/규칙 검증
@@ -277,18 +272,21 @@ sequenceDiagram
     ORCH-->>API: 추천 결과 반환
 ```
 
-에이전트 책임:
+최소 실행 구성:
 
-| 에이전트 | 책임 | 주요 Tool |
-|----------|------|-----------|
-| `OrchestratorAgent` | 실행 계획, 후보 공고 선택, 전체 순서 제어 | 전체 tool gateway |
-| `NoticeAgent` | 공고/기준 조회, 관리자 공고 포함 | `get_trial_notice`, `get_trial_criteria` |
-| `MedicalRecordAgent` | 환자정보/의사 소견서 기반 구조화 이벤트 조회 | `query_timeline_graph` |
-| `RagAgent` | 표준문서, 환자정보, 공고 원문 근거 검색 | `search_rag_evidence` |
-| `CriteriaAgent` | 기준 문장 해석, 판단 입력 구성 | Criteria Store |
-| `QuestionAgent` | 환자정보 기입 직후 부족 정보 질문 생성, 최대 5개 제한 | profile, missing fields |
-| `A2A Debate Agents` | 애매한 기준을 제한 라운드로 토론하고 추천/검토로 종료 | evidence bundle |
-| `Verifier` | LLM 제안 검증 및 최종 상태 확정 | `evaluate_rule`, Guardrails |
+| 구성 요소 | 분류 | 책임 |
+|----------|------|------|
+| `ScreeningOrchestrator` | Runtime | 실행 계획, Tool Gateway, 전체 순서와 감사 로그 |
+| `IntakeAgent` | Agent | 환자 자유 입력 정규화 |
+| `EvidenceGatheringAgent` | Agent | 필요한 RAG/타임라인 Tool 호출 계획 |
+| `EvidenceVerifier` | Agent | 근거와 기준 관계 검증 |
+| `QuestionAgent` | Agent | 환자정보 기입 직후 최대 5개 질문 생성 |
+| `UnknownDeliberation` | Agent | 애매한 기준 2라운드 교차 검토 |
+| `ResultExplanationAgent` | Agent | 추천 결과와 사전 부적합 사유 설명 |
+| 공고·기준·환자·RAG 조회 | Tool | Source of Truth와 근거 조회 |
+| `evaluate_rule` | Tool | 수치·기간·연산자 결정론적 계산 |
+
+`NoticeAgent`, `CriteriaAgent`, `MedicalRecordAgent`, `RagAgent`는 별도 Agent로 두지 않는다. 조회 책임은 Tool로 내리고, 중복되던 `RejectionReasonAgent`는 `ResultExplanationAgent`에 통합한다.
 
 ## LLM 판단 구조
 
@@ -346,11 +344,11 @@ Verifier 확정 규칙:
 | 근거가 존재하고 날짜/단위/연산자 검증 통과 | `OK` 또는 `NOT_OK` |
 | 근거가 없거나 필수 정보가 부족 | `UNKNOWN` |
 | LLM 제안과 규칙 결과가 충돌 | A2A 토론 대상으로 분류 |
-| A2A 합의 가능 | 토론 결과를 추천 점수와 기준 상태에 반영 |
+| A2A 합의 + 유효한 출처 ID | `OK` 또는 `NOT_OK` 추천에 반영하되 최종 규칙 상태는 유지 |
 | A2A 후에도 합의 불가 | Human Review |
 | 출력에 직접 식별 정보 포함 | 차단 후 재생성 |
 
-재질문은 매칭 실행 전에 정보 가치가 높은 순서로 최대 5개만 생성한다. 매칭 이후 남는 질문 후보는 사용자에게 바로 묻기보다 A2A 또는 Human Review 대상으로 넘긴다. A2A는 다시 Verifier로 순환하지 않고 토론 종료 결과를 추천 또는 검토 큐에 반영한다.
+재질문은 매칭 실행 전에 정보 가치가 높은 순서로 최대 5개만 생성한다. 매칭 이후 남는 질문 후보는 사용자에게 바로 묻기보다 A2A 또는 Human Review 대상으로 넘긴다. A2A는 최대 5개 기준을 정확히 2라운드로 교차 검토하며 다시 Verifier로 순환하지 않는다. 결정론적 합의기가 추천을 만들고 규칙의 최종 상태와 분리해 저장한다.
 
 ## UNKNOWN 처리
 
@@ -379,8 +377,7 @@ flowchart TD
 | 임시 개인정보 처리 | ElastiCache for Redis |
 | 원문 저장 | S3 + KMS |
 | 공고/기준/실행 결과 | DynamoDB |
-| Graph RAG | Amazon Neptune |
-| RAG 검색 | Bedrock Knowledge Bases + OpenSearch Serverless |
+| Graph RAG/RAG 검색 | Bedrock Knowledge Bases GraphRAG + Neptune Analytics |
 | 모델 판단 | Amazon Bedrock Converse API |
 | 에이전트 | Bedrock Agents 또는 자체 Orchestrator |
 | 안전장치 | Bedrock Guardrails |
@@ -393,7 +390,7 @@ flowchart TD
 3. ElastiCache 수신 JSON 키/TTL/암호화 정책 확정
 4. 사용자 프로필과 환자 임상 이벤트 JSON 스키마 확정
 5. 공고 기준 추출 및 관리자 검토 플로우 구현
-6. Graph RAG 노드/엣지 모델 구현
+6. 환자별 GraphRAG 문서/metadata 계약과 Bedrock 동기화 구현
 7. Bedrock tool-use 오케스트레이션 구현
 8. `OK`, `NOT_OK`, `UNKNOWN` Verifier 구현
 9. `UNKNOWN` 질문 생성과 A2A 토론 로그 구현

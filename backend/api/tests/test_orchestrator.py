@@ -30,6 +30,16 @@ def test_screening_run_returns_states_and_evidence() -> None:
             "NEEDS_MORE_EVIDENCE",
             "REVIEW_REQUIRED",
         }
+        assert body["screening_decision"] in {"OK", "NOT_OK", "UNKNOWN"}
+        expected_decision = {
+            "ELIGIBLE": "OK",
+            "INELIGIBLE": "NOT_OK",
+            "NEEDS_MORE_EVIDENCE": "UNKNOWN",
+            "REVIEW_REQUIRED": "UNKNOWN",
+        }
+        assert body["screening_decision"] == expected_decision[
+            body["eligibility_status"]
+        ]
         assert body["criteria_total"] > 0
         assert len(body["packet"]["items"]) == body["criteria_total"]
 

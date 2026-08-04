@@ -19,21 +19,28 @@ from .actions.packet import EvidencePacketBuilder
 from agent.intake import IntakeAgent
 from agent.manager import AgentManager, AgentStatus
 from agent.model import BedrockModelClient, ModelClient, ModelError
-from .config import ModelSettings, settings as default_settings
+from .config import GraphRagSettings, ModelSettings, settings as default_settings
 from .domain.intake_vocabulary import CatalogFieldResolver
 from .orchestration.gateway import ToolGateway, default_policy
+from .orchestration.recommendation import RecommendationOrchestrator
 from .orchestration.router import CriterionRouter
 from .orchestration.runtime import ScreeningOrchestrator
 from .persistence.audit import AuditTrail
 from .persistence.run_store import RunStore
 from .reasoning.aggregator import DeterministicAggregator
 from .reasoning.bundle import EvidenceBundleBuilder
+from .reasoning.judgment import JudgmentVerifier
+from .reasoning.rule_aggregator import RuleAggregator
 from .reasoning.verifier import LocalEvidenceVerifier
 from .repository import DatasetRepository
 from .safety.guardrails import LocalGuardrail
 from .safety.observability import TraceCollector
+from .safety.pseudonyms import PatientKeyResolver
 from .tools.criteria_tool import CriteriaTool
-from .tools.evidence_retrieval import EvidenceRetrievalTool
+from .tools.evidence_retrieval import (
+    BedrockKnowledgeBaseEvidenceRetrievalTool,
+    EvidenceRetrievalTool,
+)
 from .tools.rule_evaluator import RuleEvaluator
 from .tools.timeline_graph import TimelineGraphTool
 
@@ -51,9 +58,11 @@ class Container:
     criteria_tool: CriteriaTool
     timeline_tool: TimelineGraphTool
     orchestrator: ScreeningOrchestrator
+    recommendation_orchestrator: RecommendationOrchestrator
     cohort_selector: CohortSelector
     intake: IntakeAgent
     agent: AgentStatus
+    retrieval_mode: str
 
 
 def _build_model_client(
@@ -83,12 +92,16 @@ def build_container(
     *,
     model_config: ModelSettings | None = None,
     model_client: ModelClient | None = None,
+    graphrag_config: GraphRagSettings | None = None,
+    retrieval_client: object | None = None,
+    secrets_client: object | None = None,
 ) -> Container:
     """컨테이너를 구성한다.
 
     model_client 를 직접 주면 그것을 쓴다. 테스트에서 스텁을 꽂기 위한 경로다.
     """
     config = model_config or default_settings.model
+    rag_config = graphrag_config or default_settings.graphrag
     repository = DatasetRepository(data_dir)
     trace = TraceCollector()
     guardrail = LocalGuardrail()
@@ -97,7 +110,21 @@ def build_container(
 
     criteria_tool = CriteriaTool(repository)
     timeline_tool = TimelineGraphTool(repository)
-    retrieval_tool = EvidenceRetrievalTool(repository)
+    patient_key_resolver = None
+    if rag_config.enabled:
+        patient_key_resolver = PatientKeyResolver(
+            secret=rag_config.patient_pseudonym_secret,
+            secret_arn=rag_config.patient_pseudonym_secret_arn,
+            region=rag_config.region,
+            secrets_client=secrets_client,
+        )
+        retrieval_tool = BedrockKnowledgeBaseEvidenceRetrievalTool(
+            knowledge_base_id=str(rag_config.knowledge_base_id),
+            region=rag_config.region,
+            client=retrieval_client,
+        )
+    else:
+        retrieval_tool = EvidenceRetrievalTool(repository)
     rule_evaluator = RuleEvaluator()
 
     gateway = ToolGateway(trace)
@@ -140,7 +167,19 @@ def build_container(
         audit=audit,
         trace=trace,
         gatherer=agents.gatherer,
+        deliberator=agents.deliberator,
+        judge=agents.judge,
+        judgment_verifier=JudgmentVerifier(),
+        rule_aggregator=RuleAggregator(),
+        patient_key_resolver=patient_key_resolver,
         mode=agents.status.mode,
+    )
+    recommendation_orchestrator = RecommendationOrchestrator(
+        screening=orchestrator,
+        repository=repository,
+        run_store=run_store,
+        audit=audit,
+        a2a_max_criteria=config.max_deliberation_criteria,
     )
 
     return Container(
@@ -153,7 +192,9 @@ def build_container(
         criteria_tool=criteria_tool,
         timeline_tool=timeline_tool,
         orchestrator=orchestrator,
+        recommendation_orchestrator=recommendation_orchestrator,
         cohort_selector=CohortSelector(),
         intake=agents.intake,
         agent=agents.status,
+        retrieval_mode=retrieval_tool.retrieval_mode,
     )

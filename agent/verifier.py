@@ -72,6 +72,8 @@ class ModelEvidenceVerifier:
                 "MODEL",
                 criterion_id=rule.criterion_id,
                 mode=getattr(self._model, "mode", "unknown"),
+                prompt=NLI_VERIFIER.label,
+                prompt_checksum=NLI_VERIFIER.checksum,
             ) as attributes:
                 response = self._model.converse(
                     conversation=conversation, system=NLI_VERIFIER
