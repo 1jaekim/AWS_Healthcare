@@ -273,6 +273,9 @@ A2A 합의는 그라운딩된 경우에만 추천 점수에 반영하며 원래 
   → 누락 필드 질문
   → 추가 자연어 답변 병합 (반복)
   → COMPLETE + 완성 JSON
+  → 환자 기록 연결 + 지원서 필드 보충 근거 변환
+  → Screening Orchestrator가 GraphRAG/Timeline Tool 호출
+  → 근거 기반 스크리닝 결과
 ```
 
 기본 스키마는 `age`, `sex`, `diagnosed_conditions`, `current_medications`,
@@ -288,6 +291,7 @@ A2A 합의는 그라운딩된 경우에만 추천 점수에 반영하며 원래 
 | `POST` | `/api/v1/applications` | 첫 자연어 지원서 제출 |
 | `POST` | `/api/v1/applications/{application_id}/responses` | 누락 항목 추가 답변 |
 | `GET` | `/api/v1/applications/{application_id}` | 현재 작성 상태 또는 완성 JSON 조회 |
+| `POST` | `/api/v1/applications/{application_id}/screening` | 완성 JSON을 GraphRAG 오케스트레이터에 연결 |
 
 공고 담당 팀이 `notice_text`만 전달하면 LLM이 확장 필드를 생성합니다. 이미 구조화된 필드를
 가지고 있다면 `additional_fields`로 직접 전달할 수도 있어 팀 간 연결 시 LLM 처리를 중복하지
@@ -304,6 +308,18 @@ A2A 합의는 그라운딩된 경우에만 추천 점수에 반영하며 원래 
 재질문은 실제로 발행한 횟수를 기준으로 최대 5회입니다. 다섯 번째 추가 답변 이후에도 누락이
 남으면 `MAX_FOLLOW_UPS_REACHED`로 종료하고 `follow_up_prompt`를 더 이상 반환하지 않습니다.
 종료된 세션에 답변을 추가하면 `409 Conflict`를 반환합니다.
+
+`POST /api/v1/applications/{application_id}/screening`은 `COMPLETE` 상태에서만 실행됩니다.
+요청의 `person_id`로 기존 임상 기록을 연결하고, 지원서의 스칼라 값을
+`PATIENT_REPORTED` 보충 관찰값으로 변환합니다. 공고별 필드에 `criterion_field`와 `unit`을
+지정하면 각각 JSON Schema의 `x-criterion-field`, `x-unit`으로 고정되어 오케스트레이터 기준
+필드에 정확히 연결됩니다. 목록 값은 단일 관찰값으로 추측하지 않고 제외 내역에 남깁니다.
+
+오케스트레이터는 기존 환자 기록을 우선하며 지원서 값으로 덮어쓰지 않습니다. 자유서술 근거가
+필요한 기준은 `evidence_retrieval_tool`을 호출합니다. Knowledge Base 설정 환경에서는
+`person_id`를 가명 `patient_key`로 변환한 뒤 환자 격리 필터가 적용된 GraphRAG 검색을 수행하고,
+로컬 환경에서는 동일 계약의 키워드 검색을 사용합니다. 응답의 `supplements`에는 적용·제외
+필드, `source_application_id`, 실제 `retrieval_mode`가 포함됩니다.
 
 현재 `IntakeStore`는 로컬 개발용 메모리 구현입니다. 공개 메서드 계약을 유지한 채 DynamoDB
 어댑터로 교체할 수 있으며, 다중 인스턴스 배포 전에는 반드시 영속 저장소로 교체해야 합니다.

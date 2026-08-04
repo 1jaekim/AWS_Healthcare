@@ -77,7 +77,7 @@ NONE_ANSWERS = {
 SCHEMA_SYSTEM = """당신은 임상시험 지원서 스키마 설계자다.
 공고문에서 지원자가 직접 답해야 하는 사실만 추출하라. 적격 여부를 판단하지 마라.
 기본 필드(age, sex, diagnosed_conditions, current_medications, allergies, prior_trial_participation)는 이미 있으므로 만들거나 수정하지 마라. 민감정보는 공고상 반드시 필요할 때만 추가하라.
-JSON 객체 하나만 반환한다: {"fields":[{"name":"snake_case","type":"string|integer|number|boolean|array","title":"한국어 이름","description":"질문 설명","enum":[]}]}
+JSON 객체 하나만 반환한다: {"fields":[{"name":"snake_case","type":"string|integer|number|boolean|array","title":"한국어 이름","description":"질문 설명","enum":[],"criterion_field":"기준 필드 키 또는 null","unit":"단위 또는 null"}]}
 알 수 없는 조건을 추측하지 말고, 중복 필드를 만들지 마라."""
 
 EXTRACTION_SYSTEM = """당신은 임상시험 지원서 정보 추출기다.
@@ -103,6 +103,10 @@ class IntakeExtractionError(RuntimeError):
 
 
 class FollowUpLimitReached(RuntimeError):
+    pass
+
+
+class ApplicationNotComplete(RuntimeError):
     pass
 
 
@@ -224,6 +228,16 @@ class IntakeService:
         record = self._require_application(application_id)
         return self._response(record, self._require_schema(record["schema_id"]))
 
+    def completed_application(
+        self, application_id: str
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """다음 파이프라인으로 넘길 완성 레코드와 고정 스키마를 반환한다."""
+        record = self._require_application(application_id)
+        if record.get("status") != "COMPLETE":
+            raise ApplicationNotComplete(application_id)
+        schema = self._require_schema(record["schema_id"])
+        return record, schema
+
     def _generate_fields_with_model(
         self, trial_id: str, notice_text: str
     ) -> list[dict[str, Any]]:
@@ -302,6 +316,16 @@ class IntakeService:
             spec["enum"] = choices
         if field_type == "array":
             spec["items"] = {"type": "string"}
+        criterion_field = str(raw.get("criterion_field") or "").strip()
+        if criterion_field:
+            if not re.fullmatch(r"[a-z][a-z0-9_]*", criterion_field):
+                raise InvalidGeneratedSchema(
+                    f"유효하지 않은 기준 필드 매핑입니다: {criterion_field}"
+                )
+            spec["x-criterion-field"] = criterion_field
+        unit = str(raw.get("unit") or "").strip()
+        if unit:
+            spec["x-unit"] = unit
         return name, spec
 
     @classmethod

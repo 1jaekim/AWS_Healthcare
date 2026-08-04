@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -16,6 +17,8 @@ from app.intake.service import (
 )
 from app.intake.store import IntakeStore
 from app.intake.model import StubApplicationModelClient
+from app.intake.screening import ApplicationSupplementBuilder
+from app.schemas import ApplicationScreeningRequest
 
 
 class ScriptedIntakeModel:
@@ -59,6 +62,119 @@ def test_schema_keeps_base_fields_and_adds_notice_fields() -> None:
         *BASE_PROPERTIES,
         "latest_hba1c",
     }
+
+
+def test_completed_json_maps_scalar_fields_to_orchestrator_supplements() -> None:
+    application = {
+        "application_id": "APP-1",
+        "updated_at": "2026-08-04T10:00:00+00:00",
+        "data": {
+            "age": 42,
+            "latest_hba1c": 8.1,
+            "diagnosed_conditions": ["제2형 당뇨병"],
+        },
+    }
+    schema = {
+        "properties": {
+            "age": {"type": "integer", "title": "만 나이"},
+            "latest_hba1c": {
+                "type": "number",
+                "title": "최근 HbA1c",
+                "x-criterion-field": "hba1c",
+                "x-unit": "%",
+            },
+            "diagnosed_conditions": {
+                "type": "array",
+                "title": "현재 진단 질환",
+            },
+        }
+    }
+
+    result = ApplicationSupplementBuilder().build(
+        application=application, json_schema=schema
+    )
+
+    assert set(result.observations) == {"age", "hba1c"}
+    assert result.observations["hba1c"].value == 8.1
+    assert result.observations["hba1c"].unit == "%"
+    assert result.observations["hba1c"].source == "PATIENT_REPORTED"
+    assert result.observations["hba1c"].source_id == "APP-1:latest_hba1c"
+    assert result.skipped == (
+        {
+            "field": "diagnosed_conditions",
+            "reason": "목록 값은 단일 기준 관찰값으로 승격하지 않습니다.",
+        },
+    )
+
+
+def test_completed_application_calls_orchestrator_with_json_supplements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app import main
+
+    application = {
+        "application_id": "APP-1",
+        "trial_id": "TRIAL-1",
+        "status": "COMPLETE",
+        "updated_at": "2026-08-04T10:00:00+00:00",
+        "data": {"latest_hba1c": 8.1},
+    }
+    schema = {
+        "json_schema": {
+            "properties": {
+                "latest_hba1c": {
+                    "type": "number",
+                    "title": "최근 HbA1c",
+                    "x-criterion-field": "hba1c",
+                    "x-unit": "%",
+                }
+            }
+        }
+    }
+
+    class Orchestrator:
+        call: dict[str, Any] | None = None
+
+        def run(self, **kwargs: Any) -> SimpleNamespace:
+            self.call = kwargs
+            return SimpleNamespace(
+                run=SimpleNamespace(
+                    run_id="RUN-1",
+                    metadata={"supplements": {"applied": ["hba1c"], "ignored": []}}
+                )
+            )
+
+    class Audit:
+        events: list[tuple[str, dict[str, Any]]] = []
+
+        def record(self, event: str, **payload: Any) -> None:
+            self.events.append((event, payload))
+
+    orchestrator = Orchestrator()
+    container = SimpleNamespace(
+        repository=SimpleNamespace(patients={7: {}}, trials={"TRIAL-1": {}}),
+        application_intake=SimpleNamespace(
+            completed_application=lambda application_id: (application, schema)
+        ),
+        orchestrator=orchestrator,
+        audit=Audit(),
+        retrieval_mode="bedrock_graphrag",
+    )
+    monkeypatch.setattr(main, "_run_response", lambda container, output: {})
+
+    response = main.screen_completed_application(
+        "APP-1",
+        ApplicationScreeningRequest(person_id=7, actor="tester"),
+        container,
+    )
+
+    assert orchestrator.call is not None
+    assert orchestrator.call["person_id"] == 7
+    assert orchestrator.call["trial_id"] == "TRIAL-1"
+    assert orchestrator.call["supplements"]["hba1c"].value == 8.1
+    assert response["supplements"]["source_application_id"] == "APP-1"
+    assert response["supplements"]["retrieval_mode"] == "bedrock_graphrag"
+    assert container.audit.events[0][0] == "APPLICATION_SCREENING_LINKED"
 
 
 def test_notice_cannot_override_a_base_field() -> None:

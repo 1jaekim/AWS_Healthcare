@@ -10,11 +10,13 @@ from agent.toolspec import tool_names
 from .config import settings
 from .container import Container, build_container
 from .intake import (
+    ApplicationNotComplete,
     ApplicationNotFound,
     ApplicationSchemaNotFound,
     FollowUpLimitReached,
     IntakeExtractionError,
 )
+from .intake.screening import ApplicationSupplementBuilder
 from .intake.service import InvalidGeneratedSchema
 from .orchestration.runtime import PatientNotFound, TrialNotFound
 from .reasoning.supplements import SupplementBuilder
@@ -26,6 +28,7 @@ from .schemas import (
     ApplicationIntakeResponse,
     ApplicationSchemaCreateRequest,
     ApplicationSchemaResponse,
+    ApplicationScreeningRequest,
     ApplicationStartRequest,
     ArchitectureResponse,
     AuditEventOut,
@@ -319,6 +322,77 @@ def get_application(application_id: str, container: Ctx) -> dict:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Application not found"
         ) from exc
+
+
+@app.post(
+    "/api/v1/applications/{application_id}/screening",
+    response_model=ScreeningRunResponse,
+    tags=["applications", "screening"],
+)
+def screen_completed_application(
+    application_id: str,
+    payload: ApplicationScreeningRequest,
+    container: Ctx,
+) -> dict:
+    """완성 지원서 JSON을 보충 근거로 넣고 GraphRAG 스크리닝을 실행한다."""
+    if payload.person_id not in container.repository.patients:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found"
+        )
+    try:
+        application, schema = container.application_intake.completed_application(
+            application_id
+        )
+    except ApplicationNotFound as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Application not found"
+        ) from exc
+    except ApplicationNotComplete as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Application must be COMPLETE before screening",
+        ) from exc
+
+    trial_id = str(application["trial_id"])
+    if trial_id not in container.repository.trials:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Trial not found"
+        )
+    supplements = ApplicationSupplementBuilder().build(
+        application=application,
+        json_schema=schema["json_schema"],
+    )
+    try:
+        output = container.orchestrator.run(
+            person_id=payload.person_id,
+            trial_id=trial_id,
+            actor=payload.actor,
+            supplements=supplements.observations,
+        )
+    except (PatientNotFound, TrialNotFound) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+
+    container.audit.record(
+        "APPLICATION_SCREENING_LINKED",
+        actor=payload.actor,
+        run_id=output.run.run_id,
+        person_id=payload.person_id,
+        trial_id=trial_id,
+        application_id=application_id,
+        supplement_fields=sorted(supplements.observations),
+        retrieval_mode=container.retrieval_mode,
+    )
+
+    body = _run_response(container, output)
+    body["supplements"] = {
+        **supplements.to_dict(),
+        **output.run.metadata.get("supplements", {}),
+        "source_application_id": application_id,
+        "retrieval_mode": container.retrieval_mode,
+    }
+    return body
 
 
 # ---------------------------------------------------------------------------

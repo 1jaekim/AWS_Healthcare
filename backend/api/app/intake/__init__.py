@@ -2,6 +2,7 @@
 
 from .service import (
     ApplicationNotFound,
+    ApplicationNotComplete,
     ApplicationSchemaNotFound,
     FollowUpLimitReached,
     IntakeExtractionError,
@@ -11,6 +12,7 @@ from .store import IntakeStore
 
 __all__ = [
     "ApplicationNotFound",
+    "ApplicationNotComplete",
     "ApplicationSchemaNotFound",
     "IntakeExtractionError",
     "FollowUpLimitReached",

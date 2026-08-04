@@ -535,6 +535,10 @@ class IntakeAdditionalField(BaseModel):
     title: str = Field(min_length=1)
     description: str = Field(min_length=1)
     enum: list[str | int | float | bool] | None = None
+    criterion_field: str | None = Field(
+        default=None, pattern=r"^[a-z][a-z0-9_]*$"
+    )
+    unit: str | None = Field(default=None, min_length=1, max_length=32)
 
 
 class ApplicationSchemaCreateRequest(BaseModel):
@@ -566,6 +570,13 @@ class ApplicationStartRequest(BaseModel):
 
 class ApplicationAdditionalResponse(BaseModel):
     response_text: str = Field(min_length=1, max_length=10_000)
+
+
+class ApplicationScreeningRequest(BaseModel):
+    """완성 지원서를 기존 환자 기록과 연결해 오케스트레이터를 실행한다."""
+
+    person_id: int = Field(gt=0)
+    actor: str = Field(default="system", min_length=1, max_length=128)
 
 
 class MissingApplicationField(BaseModel):
