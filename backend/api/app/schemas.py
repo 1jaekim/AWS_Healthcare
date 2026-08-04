@@ -20,6 +20,30 @@ class HealthResponse(BaseModel):
     data_counts: DataCounts
     rag_status: Literal["local_keyword", "bedrock_graphrag"]
     graph_status: Literal["not_configured", "configured"]
+    auth_mode: Literal["cognito", "open", "blocked"]
+    """`cognito` 면 토큰이 필요하다. 프론트엔드가 안내 문구를 가르는 데 쓴다."""
+
+
+class PrincipalOut(BaseModel):
+    """검증된 토큰에서 파생된 요청 주체. 임상 정보는 담지 않는다."""
+
+    subject: str
+    email: str | None = None
+    groups: list[str] = Field(default_factory=list)
+    person_id: int | None = None
+    token_use: str
+    is_admin: bool
+    anonymous: bool
+
+
+class AuthStatusResponse(BaseModel):
+    """인증 설정 요약. 비밀값은 담지 않는다."""
+
+    mode: Literal["cognito", "open", "blocked"]
+    user_pool_id: str | None = None
+    issuer: str | None = None
+    admin_group: str
+    client_count: int
 
 
 class PatientSummary(BaseModel):
@@ -520,6 +544,7 @@ class ArchitectureResponse(BaseModel):
     audit_events: int
     agent: AgentStatusOut
     retrieval: dict[str, Any]
+    auth: AuthStatusResponse
 
 
 # ---------------------------------------------------------------------------

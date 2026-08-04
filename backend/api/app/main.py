@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import Annotated
 
@@ -7,6 +8,13 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
 from agent.toolspec import tool_names
+from .auth import (
+    AdminUser,
+    CurrentUser,
+    build_auth_guard,
+    ensure_person_access,
+    enforce_auth,
+)
 from .config import settings
 from .container import Container, build_container
 from .intake import (
@@ -18,6 +26,7 @@ from .intake import (
 )
 from .intake.screening import ApplicationSupplementBuilder
 from .intake.service import InvalidGeneratedSchema
+from .intake.trial_schema import TrialSchemaBuilder
 from .orchestration.runtime import PatientNotFound, TrialNotFound
 from .reasoning.supplements import SupplementBuilder
 from .repository import DatasetRepository
@@ -42,6 +51,7 @@ from .schemas import (
     IntakeResultOut,
     PatientDetail,
     PatientListResponse,
+    PrincipalOut,
     RecommendationRunRequest,
     RecommendationRunResponse,
     ReviewDecisionRequest,
@@ -62,10 +72,23 @@ _LIMITATIONS = [
 ]
 
 
+logger = logging.getLogger(__name__)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.container = build_container(settings.data_dir)
     app.state.repository = app.state.container.repository
+    # 인증 Guard 는 도메인 조립(container)과 분리한다. API 진입 계층의 관심사다.
+    app.state.auth = build_auth_guard(settings.auth)
+    if app.state.auth.mode == "open":
+        # 무인증으로 열려 있다는 사실이 로그에 남아야 한다. 배포 환경에서
+        # 설정을 빼먹고 띄운 경우를 알아챌 수 있는 유일한 신호다.
+        logger.warning(
+            "인증이 비활성 상태입니다. COGNITO_USER_POOL_ID / COGNITO_CLIENT_ID "
+            "가 설정되지 않아 /api/v1/* 가 토큰 없이 열려 있습니다. "
+            "배포 환경에서는 AUTH_REQUIRED=true 를 설정하세요."
+        )
     yield
 
 
@@ -78,11 +101,14 @@ app = FastAPI(
         "근거 패킷·확인 질문·대상별 설명을 함께 반환합니다."
     ),
     lifespan=lifespan,
+    # 인증을 전역 기본값으로 둔다. 새 엔드포인트가 추가될 때 보호되는 쪽이
+    # 기본이어야 한다. 공개 경로는 auth/dependencies.py 의 PUBLIC_PATHS 에만 적는다.
+    dependencies=[Depends(enforce_auth)],
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=list(settings.cors_allow_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -107,7 +133,7 @@ def root() -> dict[str, str]:
 
 
 @app.get("/health", response_model=HealthResponse, tags=["system"])
-def health(container: Ctx) -> dict:
+def health(request: Request, container: Ctx) -> dict:
     return {
         "status": "ok",
         "service": settings.app_name,
@@ -119,7 +145,18 @@ def health(container: Ctx) -> dict:
             if container.retrieval_mode == "bedrock_graphrag"
             else "not_configured"
         ),
+        "auth_mode": request.app.state.auth.mode,
     }
+
+
+@app.get("/api/v1/auth/me", response_model=PrincipalOut, tags=["auth"])
+def whoami(principal: CurrentUser) -> dict:
+    """토큰이 유효한지, 어떤 주체로 인식되는지 확인한다.
+
+    프론트엔드가 로그인 직후 백엔드 연결을 확인하는 데 쓴다. Cognito 미설정
+    개방 모드에서는 `anonymous: true` 인 개발 주체가 돌아온다.
+    """
+    return principal.to_dict()
 
 
 @app.get(
@@ -127,7 +164,7 @@ def health(container: Ctx) -> dict:
     response_model=ArchitectureResponse,
     tags=["system"],
 )
-def architecture(container: Ctx) -> dict:
+def architecture(request: Request, container: Ctx, _: AdminUser) -> dict:
     """등록된 Tool 과 유효 권한, 저장소 카운트, 에이전트 상태를 반환한다."""
     agent_status = {
         **container.agent.__dict__,
@@ -148,6 +185,7 @@ def architecture(container: Ctx) -> dict:
                 container.retrieval_mode == "bedrock_graphrag"
             ),
         },
+        "auth": request.app.state.auth.describe(),
     }
 
 
@@ -159,15 +197,20 @@ def architecture(container: Ctx) -> dict:
 @app.get("/api/v1/patients", response_model=PatientListResponse, tags=["patients"])
 def list_patients(
     repository: Repository,
+    _: AdminUser,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> dict:
+    """전체 환자 목록. 본인 데이터가 아니므로 관리자만 조회한다."""
     items, total = repository.list_patients(offset=offset, limit=limit)
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 @app.get("/api/v1/patients/{person_id}", response_model=PatientDetail, tags=["patients"])
-def get_patient(person_id: int, repository: Repository) -> dict:
+def get_patient(
+    person_id: int, repository: Repository, principal: CurrentUser
+) -> dict:
+    ensure_person_access(principal, person_id)
     patient = repository.patients.get(person_id)
     if not patient:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
@@ -181,7 +224,10 @@ def get_patient(person_id: int, repository: Repository) -> dict:
     response_model=TimelineResponse,
     tags=["patients"],
 )
-def get_patient_timeline(person_id: int, repository: Repository) -> dict:
+def get_patient_timeline(
+    person_id: int, repository: Repository, principal: CurrentUser
+) -> dict:
+    ensure_person_access(principal, person_id)
     if person_id not in repository.patients:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
     events = [repository.timeline_event(row) for row in repository.timelines[person_id]]
@@ -237,6 +283,46 @@ def create_application_schema(
                 if payload.additional_fields is not None
                 else None
             ),
+        )
+    except InvalidGeneratedSchema as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+
+@app.post(
+    "/api/v1/trials/{trial_id}/application-schema",
+    response_model=ApplicationSchemaResponse,
+    tags=["applications", "trials"],
+)
+def prepare_trial_application_schema(trial_id: str, container: Ctx) -> dict:
+    """공고의 선정·제외 기준으로 지원서 스키마를 준비한다.
+
+    화면에서 추천 공고를 클릭하면 이 호출 하나로 챗을 시작할 수 있다. 공고문을
+    클라이언트가 조립해 보내지 않아도 되고, 물어볼 항목이 기준에서 파생되므로
+    수집한 값이 반드시 어떤 기준의 입력이 된다.
+
+    같은 공고·같은 기준이면 같은 `schema_id` 가 나온다(내용 지문 기반). 여러 번
+    불러도 스키마가 늘어나지 않으므로 화면이 캐시를 관리할 필요가 없다.
+
+    공고문 자유 텍스트에서 LLM 으로 필드를 만들고 싶으면
+    `POST /api/v1/application-schemas` 를 쓴다. 이 경로는 모델을 부르지 않는다.
+    """
+    trial = container.repository.trials.get(trial_id)
+    if trial is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Trial not found"
+        )
+
+    request = TrialSchemaBuilder().build(
+        trial=container.repository.trial_summary(trial),
+        criteria=container.repository.trial_criteria(trial_id),
+    )
+    try:
+        return container.application_intake.generate_schema(
+            trial_id=trial_id,
+            notice_text=request.notice_text,
+            additional_fields=request.additional_fields,
         )
     except InvalidGeneratedSchema as exc:
         raise HTTPException(
@@ -333,8 +419,10 @@ def screen_completed_application(
     application_id: str,
     payload: ApplicationScreeningRequest,
     container: Ctx,
+    principal: CurrentUser,
 ) -> dict:
     """완성 지원서 JSON을 보충 근거로 넣고 GraphRAG 스크리닝을 실행한다."""
+    ensure_person_access(principal, payload.person_id)
     if payload.person_id not in container.repository.patients:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found"
@@ -444,8 +532,11 @@ def _screening_decision(eligibility_status: str | None) -> str:
     response_model=ScreeningRunResponse,
     tags=["screening"],
 )
-def run_screening(payload: ScreeningRunRequest, container: Ctx) -> dict:
+def run_screening(
+    payload: ScreeningRunRequest, container: Ctx, principal: CurrentUser
+) -> dict:
     """환자 x 시험 한 건을 실행하고 근거·질문·설명을 반환한다."""
+    ensure_person_access(principal, payload.person_id)
     if payload.person_id not in container.repository.patients:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
     if payload.trial_id not in container.repository.trials:
@@ -472,12 +563,13 @@ def run_screening(payload: ScreeningRunRequest, container: Ctx) -> dict:
     response_model=ScreeningRunResponse,
     tags=["screening"],
 )
-def get_screening(run_id: str, container: Ctx) -> dict:
+def get_screening(run_id: str, container: Ctx, principal: CurrentUser) -> dict:
     """저장된 실행 결과를 재조회한다."""
     run = container.run_store.get_run(run_id)
     artifacts = container.run_store.get_artifacts(run_id)
     if run is None or artifacts is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+    ensure_person_access(principal, run.person_id)
 
     packet = artifacts.packet
     return {
@@ -521,9 +613,10 @@ def get_screening(run_id: str, container: Ctx) -> dict:
     tags=["recommendations"],
 )
 def run_recommendations(
-    payload: RecommendationRunRequest, container: Ctx
+    payload: RecommendationRunRequest, container: Ctx, principal: CurrentUser
 ) -> dict:
     """후보 공고를 모두 판정하고 제한형 A2A 결과까지 반영해 순위를 만든다."""
+    ensure_person_access(principal, payload.person_id)
     if payload.person_id not in container.repository.patients:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -566,7 +659,9 @@ def run_recommendations(
     response_model=RecommendationRunResponse,
     tags=["recommendations"],
 )
-def get_recommendations(recommendation_id: str, container: Ctx) -> dict:
+def get_recommendations(
+    recommendation_id: str, container: Ctx, principal: CurrentUser
+) -> dict:
     """저장된 추천 결과를 재조회한다."""
     payload = container.run_store.get_recommendation(recommendation_id)
     if payload is None:
@@ -574,6 +669,9 @@ def get_recommendations(recommendation_id: str, container: Ctx) -> dict:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Recommendation not found",
         )
+    owner = payload.get("person_id")
+    if isinstance(owner, int):
+        ensure_person_access(principal, owner)
     return payload
 
 
@@ -582,7 +680,7 @@ def get_recommendations(recommendation_id: str, container: Ctx) -> dict:
     response_model=EvidencePacketOut,
     tags=["screening"],
 )
-def get_screening_evidence(run_id: str, container: Ctx) -> dict:
+def get_screening_evidence(run_id: str, container: Ctx, _: AdminUser) -> dict:
     """기준별 근거 상세만 반환한다. 관리자 근거 패널용."""
     artifacts = container.run_store.get_artifacts(run_id)
     if artifacts is None:
@@ -594,7 +692,7 @@ def get_screening_evidence(run_id: str, container: Ctx) -> dict:
     "/api/v1/screening/{run_id}/trace",
     tags=["screening"],
 )
-def get_screening_trace(run_id: str, container: Ctx) -> dict:
+def get_screening_trace(run_id: str, container: Ctx, _: AdminUser) -> dict:
     """Agent · Tool · Model 스팬 전체. Observability 확인용."""
     if container.run_store.get_run(run_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
@@ -619,8 +717,8 @@ def get_screening_trace(run_id: str, container: Ctx) -> dict:
 
 
 @app.post("/api/v1/cohort/run", response_model=CohortResponse, tags=["cohort"])
-def run_cohort(payload: CohortRunRequest, container: Ctx) -> dict:
-    """여러 환자를 배치 실행한 뒤 퍼널·병목을 집계한다."""
+def run_cohort(payload: CohortRunRequest, container: Ctx, _: AdminUser) -> dict:
+    """여러 환자를 배치 실행한 뒤 퍼널·병목을 집계한다. 연구 담당자용."""
     if payload.trial_id not in container.repository.trials:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trial not found")
 
@@ -638,7 +736,7 @@ def run_cohort(payload: CohortRunRequest, container: Ctx) -> dict:
 
 
 @app.get("/api/v1/cohort/{trial_id}", response_model=CohortResponse, tags=["cohort"])
-def get_cohort(trial_id: str, container: Ctx) -> dict:
+def get_cohort(trial_id: str, container: Ctx, _: AdminUser) -> dict:
     """이미 실행된 결과로 코호트 현황을 조회한다."""
     if trial_id not in container.repository.trials:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trial not found")
@@ -661,9 +759,11 @@ def get_cohort(trial_id: str, container: Ctx) -> dict:
 def get_patient_questions(
     person_id: int,
     container: Ctx,
+    principal: CurrentUser,
     trial_id: Annotated[str | None, Query()] = None,
 ) -> list[dict]:
     """참여자에게 보낼 확인 질문. 최신 실행 기준."""
+    ensure_person_access(principal, person_id)
     runs = container.run_store.runs_for_person(person_id)
     if trial_id:
         runs = [run for run in runs if run.trial_id == trial_id]
@@ -683,8 +783,14 @@ def get_patient_questions(
     response_model=AnswerResponse,
     tags=["participant"],
 )
-def submit_answer(person_id: int, payload: AnswerRequest, container: Ctx) -> dict:
+def submit_answer(
+    person_id: int,
+    payload: AnswerRequest,
+    container: Ctx,
+    principal: CurrentUser,
+) -> dict:
     """확인 질문에 대한 답변을 저장하고 감사 이벤트를 남긴다."""
+    ensure_person_access(principal, person_id)
     run = container.run_store.get_run(payload.run_id)
     if run is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
@@ -731,7 +837,9 @@ def submit_answer(person_id: int, payload: AnswerRequest, container: Ctx) -> dic
     response_model=ScreeningRunResponse,
     tags=["screening"],
 )
-def rerun_screening(run_id: str, container: Ctx, actor: str = "system") -> dict:
+def rerun_screening(
+    run_id: str, container: Ctx, principal: CurrentUser, actor: str = "system"
+) -> dict:
     """제출된 답변을 반영해 다시 판정한다.
 
     답변에 딸린 Intake 이벤트 중 기준 필드로 연결된 것을 관찰값으로 승격해
@@ -745,6 +853,7 @@ def rerun_screening(run_id: str, container: Ctx, actor: str = "system") -> dict:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Run not found"
         )
+    ensure_person_access(principal, run.person_id)
 
     answers = container.run_store.answers_for(run_id)
     if not answers:
@@ -804,6 +913,7 @@ def normalize_intake(payload: IntakeRequest, container: Ctx) -> dict:
 )
 def list_review_queue(
     container: Ctx,
+    _: AdminUser,
     ticket_status: Annotated[str | None, Query(alias="status")] = None,
     trial_id: Annotated[str | None, Query()] = None,
 ) -> list[dict]:
@@ -819,7 +929,7 @@ def list_review_queue(
     tags=["review"],
 )
 def decide_review(
-    ticket_id: str, payload: ReviewDecisionRequest, container: Ctx
+    ticket_id: str, payload: ReviewDecisionRequest, container: Ctx, _: AdminUser
 ) -> dict:
     """검토 항목을 승인·반려·재실행 요청으로 처리한다."""
     ticket = container.run_store.decide_ticket(
@@ -853,7 +963,7 @@ def decide_review(
     response_model=list[AuditEventOut],
     tags=["audit"],
 )
-def get_run_audit(run_id: str, container: Ctx) -> list[dict]:
+def get_run_audit(run_id: str, container: Ctx, _: AdminUser) -> list[dict]:
     """실행 한 건의 판정 이력 전체."""
     events = container.audit.for_run(run_id)
     if not events:
@@ -864,6 +974,7 @@ def get_run_audit(run_id: str, container: Ctx) -> list[dict]:
 @app.get("/api/v1/audit", response_model=list[AuditEventOut], tags=["audit"])
 def query_audit(
     container: Ctx,
+    _: AdminUser,
     person_id: Annotated[int | None, Query(gt=0)] = None,
     trial_id: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
@@ -884,12 +995,15 @@ def query_audit(
     tags=["screening (v0.1 호환)"],
     deprecated=True,
 )
-def screen_patient(payload: ScreeningRequest, repository: Repository) -> dict:
+def screen_patient(
+    payload: ScreeningRequest, repository: Repository, principal: CurrentUser
+) -> dict:
     """생성 데이터셋의 저장된 판정 스냅샷을 반환한다.
 
     v0.2 오케스트레이터(`POST /api/v1/screening/run`)로 대체되었다.
     기존 클라이언트 호환을 위해 유지한다.
     """
+    ensure_person_access(principal, payload.person_id)
     if payload.person_id not in repository.patients:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
     if payload.trial_id not in repository.trials:

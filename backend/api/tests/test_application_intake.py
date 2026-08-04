@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from agent.model import ModelResponse
+from app.auth import Principal
 from app.intake.service import (
     BASE_PROPERTIES,
     FollowUpLimitReached,
@@ -166,6 +167,9 @@ def test_completed_application_calls_orchestrator_with_json_supplements(
         "APP-1",
         ApplicationScreeningRequest(person_id=7, actor="tester"),
         container,
+        # 엔드포인트를 직접 부르므로 의존성이 주입되지 않는다. 본인 환자 접근
+        # 검사를 통과하는 주체를 넘긴다.
+        Principal(subject="tester", person_id=7),
     )
 
     assert orchestrator.call is not None

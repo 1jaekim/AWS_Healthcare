@@ -12,6 +12,7 @@ from infra.s3_stack import S3DataStack
 from infra.bedrock_stack import BedrockKnowledgeBaseStack
 from infra.observability_stack import ObservabilityStack
 from infra.main_stack import MainStack
+from infra.auth_stack import AuthStack
 
 app = cdk.App()
 
@@ -64,5 +65,11 @@ main_stack = MainStack(
 main_stack.add_dependency(s3_stack)
 main_stack.add_dependency(bedrock_stack)
 main_stack.add_dependency(observability_stack)
+
+# ─── Stack 5: 사용자 인증 (Cognito) ─────────────────────
+# 프론트엔드 로그인·회원가입이 이 User Pool 에 붙는다. 다른 스택에 의존하지
+# 않으므로 이것만 따로 배포해도 된다:
+#   cdk deploy HealthcareAuthStack
+auth_stack = AuthStack(app, "HealthcareAuthStack", env=env)
 
 app.synth()

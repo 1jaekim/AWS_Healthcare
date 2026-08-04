@@ -48,11 +48,100 @@ cd backend/api
 데이터 경로는 기본값이 저장소 루트의 `outputs/longitudinal_emr_v2/` 이며,
 `EMR_DATA_DIR` 환경 변수로 바꿀 수 있습니다.
 
+## 인증 (Amazon Cognito)
+
+프론트엔드는 로그인 후 받은 Cognito ID 토큰을 `Authorization: Bearer <token>` 으로
+보내고, API 는 그 토큰을 검증합니다 (`app/auth/`). User Pool 은
+`backend/infra/auth_stack.py` (`cdk deploy HealthcareAuthStack`) 가 만듭니다.
+
+```bash
+COGNITO_USER_POOL_ID=ap-northeast-2_xxxxxxxxx
+COGNITO_CLIENT_ID=xxxxxxxxxxxxxxxxxxxxxxxxxx
+AUTH_REQUIRED=true
+```
+
+검증 항목은 서명(User Pool JWKS, RS256), `iss`, `exp`/`iat`, `token_use`
+(`id` 또는 `access`), 그리고 대상입니다. 대상은 ID 토큰이면 `aud`, Access 토큰이면
+`client_id` 를 봅니다. Cognito 가 토큰 종류에 따라 대상을 다른 클레임에 넣기 때문에
+직접 확인합니다. JWKS 는 첫 요청에서 받아 캐시합니다.
+
+### 세 가지 모드
+
+| 모드 | 조건 | 동작 |
+|---|---|---|
+| `cognito` | User Pool 설정 있음 | 토큰 검증, 없거나 틀리면 401 |
+| `open` | 설정 없음, `AUTH_REQUIRED=false` | 검증 없이 통과 (로컬 개발) |
+| `blocked` | 설정 없음, `AUTH_REQUIRED=true` | 전부 503 |
+
+현재 모드는 `GET /health` 의 `auth_mode` 로 확인합니다. `open` 모드는 API 를
+무인증으로 열어두므로 기동 로그에 경고를 남깁니다. 배포 환경에서는
+`AUTH_REQUIRED=true` 를 설정해 설정 누락이 조용한 무인증 배포가 되지 않게 합니다.
+
+| 환경 변수 | 기본값 | 설명 |
+|---|---|---|
+| `COGNITO_USER_POOL_ID` | 없음 | User Pool ID |
+| `COGNITO_CLIENT_ID` | 없음 | 앱 클라이언트 ID (쉼표로 여러 개) |
+| `COGNITO_REGION` | `AWS_REGION` | User Pool 리전 |
+| `COGNITO_ADMIN_GROUP` | `admin` | 관리자로 인정할 Cognito 그룹 |
+| `AUTH_REQUIRED` | `false` | 설정 누락 시 개방 모드로 내려앉지 않음 |
+| `COGNITO_JWKS_CACHE_SECONDS` | `3600` | JWKS 캐시 수명 |
+| `COGNITO_CLOCK_LEEWAY_SECONDS` | `30` | 시계 오차 허용치 |
+
+### 접근 범위
+
+인증은 앱 전역 의존성입니다. 새 엔드포인트는 별도 선언 없이 보호되며, 공개로 둘
+경로만 `app/auth/dependencies.py` 의 `PUBLIC_PATHS` 에 적습니다.
+
+| 범위 | 대상 |
+|---|---|
+| 공개 | `/`, `/health`, `/docs`, `/openapi.json` |
+| 로그인 사용자 | 공고 조회, 지원서 수집, 스크리닝·추천 실행과 재조회, 확인 질문·답변, Intake 정규화 |
+| 관리자 그룹 | 환자 목록, 근거 패킷, Trace, 코호트, 검토 큐, 감사 로그, `/api/v1/architecture` |
+
+환자 단위 데이터는 본인 것만 볼 수 있습니다. 계정과 환자를 잇는 값은 Cognito 커스텀
+속성 `custom:person_id` 이며, 이 값이 없는 계정은 환자 데이터에 접근할 수 없습니다
+(`403`). 임상 정보는 한 번 잘못 열리면 되돌릴 수 없어서, 모르는 경우는 막는 쪽으로
+둡니다. 관리자 그룹은 이 제한을 받지 않습니다.
+
+`GET /api/v1/auth/me` 로 토큰이 어떤 주체로 인식되는지 확인할 수 있습니다.
+
+```json
+{
+  "subject": "8f2c...",
+  "email": "user@example.com",
+  "groups": [],
+  "person_id": 1,
+  "token_use": "id",
+  "is_admin": false,
+  "anonymous": false
+}
+```
+
+관리자 그룹은 셀프 가입으로 들어올 수 없고 운영자가 부여합니다.
+
+```bash
+aws cognito-idp admin-add-user-to-group \
+  --user-pool-id <pool-id> --username <email> --group-name admin
+```
+
+### 아직 아닌 것
+
+- 공고 등록·수정(`Refresh 모집공고`, `공고 추가`) API 가 없어서 관리자 전용 공고
+  경로도 없습니다. 사용자 흐름은 기준에서 스키마를 파생하는
+  `POST /api/v1/trials/{trial_id}/application-schema` 를 쓰고, 공고문에서 LLM 으로
+  필드를 만드는 `POST /api/v1/application-schemas` 는 공고 관리 API 가 생기면 관리자
+  범위로 옮깁니다.
+- 감사 로그의 `actor` 는 여전히 요청 본문 값입니다. 토큰 주체(`cognito:<sub>`)로
+  고정하는 것은 다음 단계입니다.
+- 사용자 프로필은 Cognito 커스텀 속성에 있습니다. 아키텍처의 목표 저장소는
+  DynamoDB `UserProfileTable` 입니다.
+
 ## 계층 구조
 
 | 계층 | 모듈 | 역할 |
 |---|---|---|
 | 2. API 진입 | `app/main.py` | 요청 검증, 응답 조립 |
+| 2. 인증 | `app/auth/` | Cognito 토큰 검증, 관리자·본인 범위 통제 |
 | 3. 오케스트레이션 | `app/orchestration/` | Runtime, Criterion Router, Tool Gateway |
 | 4. 전문 Tool | `app/tools/` | Criteria, Evidence Retrieval, Timeline Graph, Rule Evaluator |
 | 5. 데이터 | `app/repository.py` | 로컬 CSV/JSONL 어댑터 |
@@ -267,7 +356,7 @@ A2A 합의는 그라운딩된 경우에만 추천 점수에 반영하며 원래 
 
 ```text
 기본 스키마 v1
-  + 공고문에서 추출한 필드
+  + 공고 기준에서 파생된 필드 (또는 공고문에서 LLM이 추출한 필드)
   → 버전 고정 JSON Schema
   → 자연어 지원서 추출
   → 누락 필드 질문
@@ -285,18 +374,52 @@ A2A 합의는 그라운딩된 경우에만 추천 점수에 반영하며 원래 
 
 | Method | Path | 설명 |
 |---|---|---|
+| `POST` | `/api/v1/trials/{trial_id}/application-schema` | 공고 기준에서 지원서 스키마 파생 (LLM 미사용) |
 | `GET` | `/api/v1/application-schemas/base` | 고정 기본 JSON Schema 조회 |
-| `POST` | `/api/v1/application-schemas` | 기본 스키마에 공고별 필드를 추가 |
+| `POST` | `/api/v1/application-schemas` | 공고문 자유 텍스트에서 LLM이 필드를 추가 |
 | `GET` | `/api/v1/application-schemas/{schema_id}` | 버전이 고정된 스키마 조회 |
 | `POST` | `/api/v1/applications` | 첫 자연어 지원서 제출 |
 | `POST` | `/api/v1/applications/{application_id}/responses` | 누락 항목 추가 답변 |
 | `GET` | `/api/v1/applications/{application_id}` | 현재 작성 상태 또는 완성 JSON 조회 |
 | `POST` | `/api/v1/applications/{application_id}/screening` | 완성 JSON을 GraphRAG 오케스트레이터에 연결 |
 
-공고 담당 팀이 `notice_text`만 전달하면 LLM이 확장 필드를 생성합니다. 이미 구조화된 필드를
-가지고 있다면 `additional_fields`로 직접 전달할 수도 있어 팀 간 연결 시 LLM 처리를 중복하지
-않습니다. `BEDROCK_ENABLED=false`인 로컬 환경에서는 공고 내용을 추측하지 않으며,
-`additional_fields`를 명시적으로 전달해야 합니다.
+### 공고 기준에서 스키마 파생 (권장 경로)
+
+`POST /api/v1/trials/{trial_id}/application-schema` 는 그 공고의 선정·제외 기준
+(`trial_criteria`)을 읽어 지원서 필드를 만듭니다 (`app/intake/trial_schema.py`).
+화면에서 추천 공고를 클릭하면 이 호출 하나로 챗을 시작할 수 있습니다.
+
+기준을 원본으로 쓰는 이유는 두 가지입니다. 공고문을 LLM에 넣어 필드를 상상하게 하면
+같은 공고에서 실행마다 다른 질문이 나오고, 물어본 값이 어떤 기준에도 연결되지 않을 수
+있습니다. 기준에서 파생하면 모든 필드에 `x-criterion-field`가 붙어 수집한 값이 반드시
+어떤 기준의 입력이 됩니다. 모델을 부르지 않으므로 `BEDROCK_ENABLED=false`에서도 동작하고,
+같은 기준이면 같은 `schema_id`가 나와 여러 번 호출해도 스키마가 늘어나지 않습니다.
+
+기준이 있다고 모두 묻지는 않습니다.
+
+| 조건 종류 | 지원자에게 질문 | 이유 |
+|---|---|---|
+| `NUMERIC_POINT` (HbA1c, eGFR) | O | 최근 검사 수치는 본인이 아는 값 |
+| `CATEGORICAL` (당뇨 상태) | O | 현재 상태로 답할 수 있음 |
+| `DERIVED_BOOLEAN` (임신 여부) | O | 해당 여부로 답할 수 있음 |
+| `TEMPORAL_WINDOW` (진단 기간, 최근 365일 측정 횟수) | X | 기록에서 계산하는 값. Timeline Tool이 셈 |
+| `NARRATIVE` | X | 자유서술 검색으로 확인 |
+
+물어봐야 답이 나오지 않는 항목을 필수로 넣으면 재질문 5회를 그것으로 소진하고
+`MAX_FOLLOW_UPS_REACHED`로 끝납니다. 제외된 조건도 `notice_text` 공고 요약에는 그대로
+남습니다.
+
+기준의 임계값은 질문 문구에 넣지 않습니다. "HbA1c 7.0 이상이신가요?"처럼 물으면 답이
+조건 쪽으로 끌려갑니다. 값만 묻고 판정은 뒤 계층이 합니다. 단위는 기준이 선언한 값을
+그대로 `x-unit`에 넣어 판정 단계의 단위 검증과 어긋나지 않게 합니다.
+
+### 공고문에서 LLM으로 스키마 생성
+
+`POST /api/v1/application-schemas` 는 공고 담당 팀이 `notice_text`만 전달하면 LLM이
+확장 필드를 생성합니다. 아직 기준이 구조화되지 않은 공고를 받을 때 쓰는 경로입니다.
+이미 구조화된 필드를 가지고 있다면 `additional_fields`로 직접 전달할 수도 있어 팀 간
+연결 시 LLM 처리를 중복하지 않습니다. `BEDROCK_ENABLED=false`인 로컬 환경에서는 공고
+내용을 추측하지 않으며, `additional_fields`를 명시적으로 전달해야 합니다.
 
 지원서 응답의 `status`는 `NEEDS_MORE_INFO`, `COMPLETE`, 또는
 `MAX_FOLLOW_UPS_REACHED`입니다. 미완성 응답에는 원문 공고,
@@ -330,8 +453,8 @@ A2A 합의는 그라운딩된 경우에만 추천 점수에 반영하며 원래 
 |---|---|---|
 | `POST` | `/api/v1/screening/run` | 환자 x 시험 한 건 실행 |
 | `GET` | `/api/v1/screening/{run_id}` | 실행 결과 재조회 |
-| `GET` | `/api/v1/screening/{run_id}/evidence` | 기준별 근거 패킷 |
-| `GET` | `/api/v1/screening/{run_id}/trace` | Agent·Tool·Model 스팬 |
+| `GET` | `/api/v1/screening/{run_id}/evidence` | 기준별 근거 패킷 (관리자) |
+| `GET` | `/api/v1/screening/{run_id}/trace` | Agent·Tool·Model 스팬 (관리자) |
 
 요청 예시:
 
@@ -359,6 +482,8 @@ A2A 합의는 그라운딩된 경우에만 추천 점수에 반영하며 원래 
 
 ### 코호트
 
+관리자 그룹만 호출할 수 있습니다.
+
 | Method | Path | 설명 |
 |---|---|---|
 | `POST` | `/api/v1/cohort/run` | 배치 실행 후 퍼널·병목 집계 |
@@ -373,6 +498,8 @@ A2A 합의는 그라운딩된 경우에만 추천 점수에 반영하며 원래 
 
 ### 검토·감사
 
+관리자 그룹만 호출할 수 있습니다.
+
 | Method | Path | 설명 |
 |---|---|---|
 | `GET` | `/api/v1/review-queue` | 검토 대기 목록 |
@@ -385,6 +512,8 @@ A2A 합의는 그라운딩된 경우에만 추천 점수에 반영하며 원래 
 
 `/api/v1/patients`, `/api/v1/patients/{id}`, `/api/v1/patients/{id}/timeline`,
 `/api/v1/trials`, `/api/v1/trials/{id}` 는 v0.1과 동일합니다.
+`/api/v1/patients` 목록은 관리자 그룹만, 환자 단위 조회는 본인 또는 관리자만
+호출할 수 있습니다.
 
 `POST /api/v1/screenings` (v0.1 스냅샷 판정)는 호환을 위해 유지하되 deprecated 입니다.
 

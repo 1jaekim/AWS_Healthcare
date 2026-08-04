@@ -113,6 +113,88 @@ class GraphRagSettings:
 
 
 @dataclass(frozen=True)
+class AuthSettings:
+    """Amazon Cognito 토큰 검증 설정.
+
+    프론트엔드(`frontend/`)는 Cognito ID 토큰을 `Authorization: Bearer` 로 보낸다.
+    이 설정이 채워지면 API 가 그 토큰을 검증하고, 비어 있으면 개방 모드로 돈다.
+
+    개방 모드는 로컬 개발과 기존 테스트를 위한 것이다. 배포 환경에서는
+    `AUTH_REQUIRED=true` 를 켜서 설정 누락이 조용한 무인증 배포가 되지 않게 한다.
+
+    값은 `cdk deploy HealthcareAuthStack` 출력에서 가져온다.
+
+        COGNITO_USER_POOL_ID=ap-northeast-2_xxxxxxxxx
+        COGNITO_CLIENT_ID=xxxxxxxxxxxxxxxxxxxxxxxxxx
+    """
+
+    user_pool_id: str | None = field(
+        default_factory=lambda: os.getenv("COGNITO_USER_POOL_ID") or None
+    )
+    client_ids: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            item.strip()
+            for item in os.getenv("COGNITO_CLIENT_ID", "").split(",")
+            if item.strip()
+        )
+    )
+    region: str = field(
+        default_factory=lambda: os.getenv("COGNITO_REGION") or resolve_region()
+    )
+    admin_group: str = field(
+        default_factory=lambda: os.getenv("COGNITO_ADMIN_GROUP", "admin")
+    )
+    required: bool = field(default_factory=lambda: _flag("AUTH_REQUIRED", False))
+    """켜면 설정이 비었을 때 개방 모드로 내려앉지 않고 요청을 거부한다."""
+
+    jwks_cache_seconds: int = field(
+        default_factory=lambda: _int("COGNITO_JWKS_CACHE_SECONDS", 3600)
+    )
+    """JWKS 캐시 수명. Cognito 의 서명 키는 거의 바뀌지 않는다."""
+
+    leeway_seconds: int = field(
+        default_factory=lambda: _int("COGNITO_CLOCK_LEEWAY_SECONDS", 30)
+    )
+    """시계 오차 허용치. 컨테이너 시계가 몇 초 밀리는 일은 흔하다."""
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.user_pool_id and self.client_ids)
+
+    @property
+    def issuer(self) -> str:
+        """토큰의 `iss` 클레임과 일치해야 하는 값."""
+        return (
+            f"https://cognito-idp.{self.region}.amazonaws.com/{self.user_pool_id}"
+        )
+
+    @property
+    def jwks_url(self) -> str:
+        return f"{self.issuer}/.well-known/jwks.json"
+
+
+DEFAULT_CORS_ORIGINS = (
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+)
+
+
+def _origins() -> tuple[str, ...]:
+    """CORS 허용 출처.
+
+    프론트엔드(`frontend/`)는 Amplify Hosting 또는 S3+CloudFront 에 정적으로
+    배포된다. 배포 도메인은 환경마다 달라서 쉼표로 구분해 받는다. 기본값은
+    로컬 vite 개발 서버뿐이다.
+
+        CORS_ALLOW_ORIGINS=https://main.d123.amplifyapp.com,https://trial.example.com
+    """
+    raw = os.getenv("CORS_ALLOW_ORIGINS")
+    if raw is None or not raw.strip():
+        return DEFAULT_CORS_ORIGINS
+    return tuple(item.strip() for item in raw.split(",") if item.strip())
+
+
+@dataclass(frozen=True)
 class Settings:
     app_name: str = "Clinical Trial Screening API"
     app_version: str = "0.3.0"
@@ -123,6 +205,8 @@ class Settings:
     )
     model: ModelSettings = field(default_factory=ModelSettings)
     graphrag: GraphRagSettings = field(default_factory=GraphRagSettings)
+    auth: AuthSettings = field(default_factory=AuthSettings)
+    cors_allow_origins: tuple[str, ...] = field(default_factory=_origins)
 
 
 settings = Settings()
