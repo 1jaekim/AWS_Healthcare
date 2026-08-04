@@ -445,3 +445,73 @@ class ArchitectureResponse(BaseModel):
     stores: dict[str, int]
     audit_events: int
     agent: AgentStatusOut
+
+
+# ---------------------------------------------------------------------------
+# 공고 기반 자연어 지원서 수집
+# ---------------------------------------------------------------------------
+
+
+class IntakeAdditionalField(BaseModel):
+    """공고 담당 팀이 LLM 대신 직접 넘길 수도 있는 확장 필드 계약."""
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    type: Literal["string", "integer", "number", "boolean", "array"] = "string"
+    title: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    enum: list[str | int | float | bool] | None = None
+
+
+class ApplicationSchemaCreateRequest(BaseModel):
+    trial_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._-]+$")
+    notice_text: str = Field(min_length=1, max_length=100_000)
+    additional_fields: list[IntakeAdditionalField] | None = None
+
+
+class ApplicationSchemaResponse(BaseModel):
+    schema_id: str
+    trial_id: str
+    version: str
+    base_schema_version: str
+    notice_text: str
+    json_schema: dict[str, Any]
+    mode: str
+    created_at: str
+
+
+class BaseApplicationSchemaResponse(BaseModel):
+    version: str
+    json_schema: dict[str, Any]
+
+
+class ApplicationStartRequest(BaseModel):
+    schema_id: str = Field(min_length=1)
+    application_text: str = Field(min_length=1, max_length=20_000)
+
+
+class ApplicationAdditionalResponse(BaseModel):
+    response_text: str = Field(min_length=1, max_length=10_000)
+
+
+class MissingApplicationField(BaseModel):
+    name: str
+    title: str
+    description: str
+    type: str
+
+
+class ApplicationIntakeResponse(BaseModel):
+    application_id: str
+    schema_id: str
+    trial_id: str
+    status: Literal[
+        "NEEDS_MORE_INFO", "COMPLETE", "MAX_FOLLOW_UPS_REACHED"
+    ]
+    data: dict[str, Any]
+    missing_fields: list[MissingApplicationField]
+    follow_up_prompt: str | None = None
+    notice_text: str
+    iteration: int
+    follow_up_count: int = Field(ge=0, le=5)
+    max_follow_ups: int = 5
+    updated_at: str

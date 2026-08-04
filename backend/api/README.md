@@ -10,9 +10,9 @@
 AWS 서비스 연결 전이므로 Knowledge Bases / Neptune / DynamoDB 자리는 로컬 어댑터가
 동일한 계약으로 채우고 있습니다.
 
-> Bedrock 실제 호출은 이 환경에서 검증하지 못했습니다. Converse API 요청 형식과
-> 응답 파싱은 가짜 클라이언트로 테스트했고, 자격 증명이 없으면 결정론적 스텁으로
-> 내려앉습니다.
+> 서울 리전에서 Global Claude Sonnet 4.5 inference profile의 Converse API 호출과
+> 지원서 Schema 생성·누락 질문·추가 답변 병합을 실제로 검증했습니다. 자격 증명이 없으면
+> 결정론적 스텁으로 내려앉습니다.
 
 ## 위치
 
@@ -146,8 +146,8 @@ POST /api/v1/intake/normalize
 | 환경 변수 | 기본값 | 설명 |
 |---|---|---|
 | `BEDROCK_ENABLED` | `false` | 에이전트 모드 활성화 |
-| `AWS_REGION` | `us-east-1` | Bedrock 리전 |
-| `BEDROCK_MODEL_ID` | `anthropic.claude-3-5-sonnet-20241022-v2:0` | 모델 |
+| `AWS_REGION` | `ap-northeast-2` | Bedrock 호출 리전 |
+| `BEDROCK_MODEL_ID` | `global.anthropic.claude-sonnet-4-5-20250929-v1:0` | 검증된 Claude Sonnet inference profile |
 | `BEDROCK_MAX_TOKENS` | `1024` | 응답 상한 |
 | `AGENT_MAX_ITERATIONS` | `4` | tool-use 루프 상한 |
 | `BEDROCK_GUARDRAIL_ID` | 없음 | Bedrock Guardrails 연결 |
@@ -156,6 +156,15 @@ POST /api/v1/intake/normalize
 
 Bedrock을 켰지만 클라이언트 생성이 실패하면 스텁으로 내려앉고, 이유가
 `/api/v1/architecture` 의 `agent.fallback_reason` 에 남습니다.
+
+로컬에서 실제 Sonnet을 사용할 때는 `.env.example`을 `.env`로 복사한 뒤 다음처럼 실행할 수
+있습니다. AWS access key는 파일에 넣지 말고 AWS CLI profile 또는 IAM role을 사용합니다.
+
+```bash
+cp backend/api/.env.example backend/api/.env
+backend/.venv/bin/python -m uvicorn app.main:app --app-dir backend/api \
+  --env-file backend/api/.env --reload --port 8000
+```
 
 실행 응답의 `mode` 필드로 어느 경로를 탔는지 확인할 수 있습니다
 (`deterministic` / `agent:bedrock` / `agent:stub`).
@@ -182,6 +191,54 @@ Bedrock을 켰지만 클라이언트 생성이 실패하면 스텁으로 내려�
 바뀌면 재현 조건이 달라진 것을 식별할 수 있습니다.
 
 ## 주요 API
+
+### 자연어 임상시험 지원서
+
+지원서 수집은 스크리닝 판정과 분리되어 있습니다. 이 단계는 값을 수집할 뿐 적격 여부를
+판단하지 않습니다.
+
+```text
+기본 스키마 v1
+  + 공고문에서 추출한 필드
+  → 버전 고정 JSON Schema
+  → 자연어 지원서 추출
+  → 누락 필드 질문
+  → 추가 자연어 답변 병합 (반복)
+  → COMPLETE + 완성 JSON
+```
+
+기본 스키마는 `age`, `sex`, `diagnosed_conditions`, `current_medications`,
+`allergies`, `prior_trial_participation`을 필수로 포함합니다. 이름과 연락처 같은 직접
+식별정보는 지원 자격 JSON에 포함하지 않고 사용자 계정 영역에서 별도로 관리합니다.
+공고별 필드는 기본 필드를 덮어쓸 수 없으며 모두 `x-source: trial_notice`로 표시됩니다.
+
+| Method | Path | 설명 |
+|---|---|---|
+| `GET` | `/api/v1/application-schemas/base` | 고정 기본 JSON Schema 조회 |
+| `POST` | `/api/v1/application-schemas` | 기본 스키마에 공고별 필드를 추가 |
+| `GET` | `/api/v1/application-schemas/{schema_id}` | 버전이 고정된 스키마 조회 |
+| `POST` | `/api/v1/applications` | 첫 자연어 지원서 제출 |
+| `POST` | `/api/v1/applications/{application_id}/responses` | 누락 항목 추가 답변 |
+| `GET` | `/api/v1/applications/{application_id}` | 현재 작성 상태 또는 완성 JSON 조회 |
+
+공고 담당 팀이 `notice_text`만 전달하면 LLM이 확장 필드를 생성합니다. 이미 구조화된 필드를
+가지고 있다면 `additional_fields`로 직접 전달할 수도 있어 팀 간 연결 시 LLM 처리를 중복하지
+않습니다. `BEDROCK_ENABLED=false`인 로컬 환경에서는 공고 내용을 추측하지 않으며,
+`additional_fields`를 명시적으로 전달해야 합니다.
+
+지원서 응답의 `status`는 `NEEDS_MORE_INFO`, `COMPLETE`, 또는
+`MAX_FOLLOW_UPS_REACHED`입니다. 미완성 응답에는 원문 공고,
+누락 필드 목록과 `follow_up_prompt`가 함께 포함됩니다. 빈 배열(`알레르기 없음`)과 `false`
+(`과거 참여 없음`)는 유효한 답변이며 누락으로 처리하지 않습니다. 배열 필드는 추가 답변을
+누적하고 같은 값을 중복 제거합니다. 명시적인 `없음`은 기존 배열을 비우는 정정으로 처리하며,
+나이·성별·수치·불리언 같은 단일값은 가장 최근의 명확한 답변으로 교체합니다.
+
+재질문은 실제로 발행한 횟수를 기준으로 최대 5회입니다. 다섯 번째 추가 답변 이후에도 누락이
+남으면 `MAX_FOLLOW_UPS_REACHED`로 종료하고 `follow_up_prompt`를 더 이상 반환하지 않습니다.
+종료된 세션에 답변을 추가하면 `409 Conflict`를 반환합니다.
+
+현재 `IntakeStore`는 로컬 개발용 메모리 구현입니다. 공개 메서드 계약을 유지한 채 DynamoDB
+어댑터로 교체할 수 있으며, 다중 인스턴스 배포 전에는 반드시 영속 저장소로 교체해야 합니다.
 
 ### 스크리닝
 
@@ -255,8 +312,8 @@ Rule Evaluator는 다른 Tool의 출력을 입력으로 받지만, 직접 호출
 ## 알려진 제약
 
 - 판정은 인덱스 방문(최신 방문) 시점의 관찰값을 기준으로 계산됩니다.
-- **Bedrock 실제 호출은 검증되지 않았습니다.** 요청 형식과 응답 파싱만 테스트했습니다.
-  자격 증명이 있는 환경에서 확인이 필요합니다.
+- Bedrock 실제 검증은 합성 공고와 합성 지원서로 수행했습니다. 실제 환자 정보나 운영 공고를
+  전송하지 않았으며, 운영 전에는 IAM·데이터 처리 정책과 공고별 Schema 승인을 확인해야 합니다.
 - 자유서술 검색은 벡터 검색이 아닌 키워드 일치입니다. Knowledge Bases 연결 시
   검색 품질이 달라지므로 파생 불리언 판정을 다시 확인해야 합니다.
 - 데이터셋 자체에 나이 이상치가 있습니다 (예: person 3의 최신 방문 age=107).
@@ -272,7 +329,7 @@ Rule Evaluator는 다른 Tool의 출력을 입력으로 받지만, 직접 호출
 | `app/tools/criteria_tool.py` | CSV | DynamoDB Criteria Store |
 | `app/tools/evidence_retrieval.py` | 키워드 검색 | Bedrock KB + OpenSearch |
 | `app/tools/timeline_graph.py` | CSV | Amazon Neptune |
-| `agent/model.py` | 스텁 | Bedrock Converse (구현 완료, 미검증) |
+| `agent/model.py` | 스텁 | Bedrock Converse (Global Claude Sonnet 4.5 검증) |
 | `app/safety/guardrails.py` | 정규식 | Bedrock Guardrails (연결부 구현) |
 | `app/persistence/run_store.py` | 메모리 | DynamoDB |
 | `app/persistence/audit.py` | 메모리 | DDB Streams → Firehose → S3 |

@@ -21,6 +21,8 @@ from agent.manager import AgentManager, AgentStatus
 from agent.model import BedrockModelClient, ModelClient, ModelError
 from .config import ModelSettings, settings as default_settings
 from .domain.intake_vocabulary import CatalogFieldResolver
+from .intake import IntakeService, IntakeStore
+from .intake.model import StubApplicationModelClient
 from .orchestration.gateway import ToolGateway, default_policy
 from .orchestration.router import CriterionRouter
 from .orchestration.runtime import ScreeningOrchestrator
@@ -53,6 +55,8 @@ class Container:
     orchestrator: ScreeningOrchestrator
     cohort_selector: CohortSelector
     intake: IntakeAgent
+    application_intake: IntakeService
+    intake_store: IntakeStore
     agent: AgentStatus
 
 
@@ -94,6 +98,11 @@ def build_container(
     guardrail = LocalGuardrail()
     audit = AuditTrail()
     run_store = RunStore()
+    intake_store = IntakeStore()
+
+    shared_model = model_client
+    if shared_model is None:
+        shared_model, _ = _build_model_client(config)
 
     criteria_tool = CriteriaTool(repository)
     timeline_tool = TimelineGraphTool(repository)
@@ -121,7 +130,7 @@ def build_container(
         ),
         narration_guardrail=LocalGuardrail(attach_disclaimer=False),
         field_resolver=CatalogFieldResolver(),
-        model_client=model_client,
+        model_client=shared_model,
         model_factory=_build_model_client,
     ).build()
 
@@ -142,6 +151,12 @@ def build_container(
         gatherer=agents.gatherer,
         mode=agents.status.mode,
     )
+    # 지원서 모듈은 로컬에서도 계약을 검증할 수 있도록 결정론적 스텁을 사용한다.
+    # 운영에서 Bedrock이 활성화되면 스크리닝과 같은 모델 클라이언트를 공유한다.
+    application_intake = IntakeService(
+        store=intake_store,
+        model=shared_model or StubApplicationModelClient(),
+    )
 
     return Container(
         repository=repository,
@@ -155,5 +170,7 @@ def build_container(
         orchestrator=orchestrator,
         cohort_selector=CohortSelector(),
         intake=agents.intake,
+        application_intake=application_intake,
+        intake_store=intake_store,
         agent=agents.status,
     )
