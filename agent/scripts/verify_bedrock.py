@@ -16,7 +16,7 @@
 사용법:
 
     # 저장소 루트에서
-    $env:AWS_REGION = "us-east-1"
+    $env:AWS_REGION = "ap-northeast-2"
     backend/.venv/Scripts/python agent/scripts/verify_bedrock.py
 
     # 모델과 가드레일을 지정
@@ -205,7 +205,7 @@ class Verifier:
         if self._client is None:
             self._client = BedrockModelClient(
                 model_id=self._args.model_id,
-                region=self._args.region or os.getenv("AWS_REGION", "us-east-1"),
+                region=self._args.region or os.getenv("AWS_REGION", "ap-northeast-2"),
                 max_tokens=self._args.max_tokens,
                 temperature=0.0,
                 guardrail_id=self._args.guardrail_id,

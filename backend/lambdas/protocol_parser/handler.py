@@ -30,7 +30,7 @@ textract_client = boto3.client("textract")
 BUCKET_NAME = os.environ.get("S3_BUCKET_NAME", "aws-healthcare-data")
 CRITERIA_TABLE = os.environ.get("DYNAMODB_CRITERIA_TABLE", "CriteriaStore")
 BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0")
-AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+AWS_REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
 
 table = dynamodb.Table(CRITERIA_TABLE)
 

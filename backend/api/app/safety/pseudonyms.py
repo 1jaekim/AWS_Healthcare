@@ -6,6 +6,8 @@ import hashlib
 import hmac
 from typing import Any
 
+from ..config import resolve_region
+
 
 def pseudonymize_patient_id(person_id: int | str, secret: str) -> str:
     """Sanitizer와 동일한 HMAC-SHA256 계약으로 patient_key를 만든다."""
@@ -28,7 +30,7 @@ class PatientKeyResolver:
         *,
         secret: str | None = None,
         secret_arn: str | None = None,
-        region: str = "us-east-1",
+        region: str | None = None,
         secrets_client: Any | None = None,
     ) -> None:
         if not secret and not secret_arn:
@@ -37,7 +39,9 @@ class PatientKeyResolver:
             )
         self._secret = secret
         self._secret_arn = secret_arn
-        self._region = region
+        # 리전 기본값은 config 한 곳에서 정한다. 여기에 직접 적으면 배포 리전을
+        # 바꿀 때 이 줄이 남아 Secrets Manager 를 다른 리전에서 찾는다.
+        self._region = region or resolve_region()
         self._secrets_client = secrets_client
 
     def __call__(self, person_id: int) -> str:

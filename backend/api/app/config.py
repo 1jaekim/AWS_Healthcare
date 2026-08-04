@@ -17,6 +17,20 @@ def _flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+DEFAULT_REGION = "ap-northeast-2"
+"""배포 리전 기본값. 서울 리전에 Bedrock KB 와 Neptune Analytics 를 둔다.
+
+리전 기본값을 여러 곳에 흩어 적으면 한쪽만 바뀌어도 조용히 어긋난다. 모델 호출과
+GraphRAG 검색이 서로 다른 리전을 보게 되면 KB 를 찾지 못한다. 그래서 이 상수와
+`resolve_region()` 을 유일한 출처로 둔다.
+"""
+
+
+def resolve_region() -> str:
+    """실행 리전을 정한다. AWS 표준 환경 변수를 순서대로 본다."""
+    return os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION") or DEFAULT_REGION
+
+
 def _int(name: str, default: int) -> int:
     raw = os.getenv(name)
     if raw is None or not raw.strip():
@@ -38,12 +52,7 @@ class ModelSettings:
     enabled: bool = field(
         default_factory=lambda: _flag("BEDROCK_ENABLED", False)
     )
-    region: str = field(
-        default_factory=lambda: os.getenv(
-            "AWS_REGION",
-            os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2"),
-        )
-    )
+    region: str = field(default_factory=resolve_region)
     model_id: str = field(
         default_factory=lambda: os.getenv(
             "BEDROCK_MODEL_ID",
@@ -90,9 +99,7 @@ class GraphRagSettings:
     knowledge_base_id: str | None = field(
         default_factory=lambda: os.getenv("KNOWLEDGE_BASE_ID") or None
     )
-    region: str = field(
-        default_factory=lambda: os.getenv("AWS_REGION", "us-east-1")
-    )
+    region: str = field(default_factory=resolve_region)
     patient_pseudonym_secret: str | None = field(
         default_factory=lambda: os.getenv("PATIENT_PSEUDONYM_SECRET") or None
     )

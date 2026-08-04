@@ -16,9 +16,16 @@ from infra.main_stack import MainStack
 app = cdk.App()
 
 # 환경 설정
+# 기본 리전은 서울이다. Bedrock Knowledge Bases 와 Neptune Analytics 를 이 리전에
+# 만들고, API 도 같은 리전을 본다(backend/api/app/config.py 의 DEFAULT_REGION).
+# 두 값이 어긋나면 배포는 되지만 런타임에 KB 를 찾지 못한다.
 env = cdk.Environment(
     account=os.environ.get("CDK_DEFAULT_ACCOUNT"),
-    region=os.environ.get("CDK_DEFAULT_REGION", "us-east-1"),
+    region=(
+        os.environ.get("CDK_DEFAULT_REGION")
+        or os.environ.get("AWS_REGION")
+        or "ap-northeast-2"
+    ),
 )
 
 # 알림 이메일 (cdk.json 또는 환경변수에서)

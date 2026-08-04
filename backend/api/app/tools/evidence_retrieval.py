@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from ..config import resolve_region
 from ..domain.models import NarrativeSnippet
 from ..repository import DatasetRepository
 from .base import Action, BaseTool, DataStore, Permission, ToolContext
@@ -123,13 +124,15 @@ class BedrockKnowledgeBaseEvidenceRetrievalTool(BaseTool):
         self,
         *,
         knowledge_base_id: str,
-        region: str = "us-east-1",
+        region: str | None = None,
         client: Any | None = None,
     ) -> None:
         if not knowledge_base_id.strip():
             raise ValueError("knowledge_base_id is required")
         self._knowledge_base_id = knowledge_base_id
-        self._region = region
+        # KB 가 있는 리전과 다른 리전을 보면 검색이 통째로 실패한다.
+        # 기본값은 config 한 곳에서 정한다.
+        self._region = region or resolve_region()
         self._client = client
 
     def invoke(
