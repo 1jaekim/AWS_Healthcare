@@ -164,19 +164,13 @@ class ApiStack(Stack):
         pseudonym_secret.grant_read(self.function)
 
         # ─── 공개 진입점 ─────────────────────────────────
-        # CORS 를 Function URL 과 FastAPI 양쪽에 둔다. 브라우저의 프리플라이트는
-        # Lambda 가 깨어나기 전에 Function URL 계층에서 끝나야 하고, 실제 응답의
-        # 헤더는 앱이 붙인다.
-        allowed = [item.strip() for item in cors_origins.split(",") if item.strip()]
+        # CORS 는 FastAPI 미들웨어 한 곳에서만 처리한다. Function URL 에도 CORS 를
+        # 설정하면 실제 응답에 Access-Control-Allow-Origin 이 두 번 붙고, 브라우저는
+        # 동일한 값이어도 중복 헤더를 잘못된 CORS 응답으로 거부한다. 프리플라이트가
+        # Lambda 를 깨우는 작은 비용보다 모든 브라우저 요청이 실패하는 쪽이 훨씬
+        # 치명적이다.
         self.function_url = self.function.add_function_url(
             auth_type=_lambda.FunctionUrlAuthType.NONE,
-            cors=_lambda.FunctionUrlCorsOptions(
-                allowed_origins=allowed or ["*"],
-                allowed_methods=[_lambda.HttpMethod.ALL],
-                allowed_headers=["content-type", "authorization"],
-                allow_credentials=False,
-                max_age=Duration.hours(1),
-            ),
         )
 
         CfnOutput(
