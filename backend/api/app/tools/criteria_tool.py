@@ -107,7 +107,7 @@ class CriteriaTool(BaseTool):
                     value_low=row.get("value_low") or None,
                     value_high=row.get("value_high") or None,
                     unit=row.get("unit") or spec.unit,
-                    label=spec.label,
+                    label=row.get("label") or spec.label,
                     kind=spec.kind,
                     trial_id=trial_id,
                     criteria_version=version,

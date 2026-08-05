@@ -6,6 +6,8 @@ FM 을 사용하지 않는다. 동일 입력에 항상 동일 결과를 내야 �
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 from ..domain.models import CriterionRule, Observation, RuleOutcome
@@ -98,6 +100,28 @@ class RuleEvaluator(BaseTool):
         if operator == "=":
             return self._equals(rule, value)
 
+        if operator in {"in", "not_in"}:
+            expected = self._choices(rule.value_low)
+            observed = str(value).strip().casefold()
+            matched = any(
+                observed == choice.casefold() or observed in choice.casefold()
+                for choice in expected
+            )
+            ok = matched if operator == "in" else not matched
+            return ok, (
+                f"{rule.label} 관찰값 '{value}' 은 허용 범위 "
+                f"{expected}에 {'해당' if matched else '미해당'}합니다."
+            )
+
+        if operator == "has":
+            expected = str(rule.value_low or "").strip().casefold()
+            observed = str(value).strip().casefold()
+            ok = bool(expected and (expected in observed or observed in expected))
+            return ok, (
+                f"{rule.label} 관찰값에서 요구 내용을 "
+                f"{'확인했습니다' if ok else '확인하지 못했습니다'}."
+            )
+
         numeric = value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
         threshold = _as_float(rule.value_low)
         if numeric is None or threshold is None:
@@ -154,3 +178,14 @@ class RuleEvaluator(BaseTool):
         candidates = aliases.get(expected.lower(), (expected,))
         lowered = observed.lower()
         return any(item.lower() in lowered or lowered in item.lower() for item in candidates)
+
+    @staticmethod
+    def _choices(value: str | None) -> list[str]:
+        raw = str(value or "").strip()
+        try:
+            decoded = json.loads(raw)
+        except json.JSONDecodeError:
+            decoded = None
+        if isinstance(decoded, list):
+            return [str(item).strip() for item in decoded if str(item).strip()]
+        return [item.strip() for item in re.split(r"[,|/]", raw) if item.strip()]

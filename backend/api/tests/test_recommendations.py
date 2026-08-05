@@ -44,17 +44,20 @@ def _output(
     decision: str,
     deliberation: dict | None = None,
 ):
-    result = _criterion(f"{trial_id}-C01", status)
+    results = [
+        _criterion(f"{trial_id}-C{index:02d}", status)
+        for index in range(1, 4)
+    ]
     run = SimpleNamespace(
         run_id=f"RUN-{trial_id}",
         trial_id=trial_id,
-        results=[result],
+        results=results,
         metadata={"deliberation": deliberation or {}},
     )
     outcome = SimpleNamespace(
         screening_decision=decision,
-        criteria_met=int(status is CriterionStatus.EVIDENCE_FOUND),
-        criteria_total=1,
+        criteria_met=3 * int(status is CriterionStatus.EVIDENCE_FOUND),
+        criteria_total=3,
     )
     return SimpleNamespace(
         run=run,
@@ -65,19 +68,19 @@ def _output(
 
 
 def test_ranker_uses_only_grounded_a2a_consensus() -> None:
-    criterion_id = "TRIAL-A-C01"
     grounded = {
         "enabled": True,
         "rounds": 2,
         "max_rounds": 2,
         "items": [
             {
-                "criterion_id": criterion_id,
+                "criterion_id": f"TRIAL-A-C{index:02d}",
                 "recommendation": "OK",
                 "agreement": True,
                 "grounded": True,
                 "source_ids": ["NOTE-1"],
             }
+            for index in range(1, 4)
         ],
     }
     outputs = [
@@ -149,6 +152,30 @@ def test_grounded_a2a_not_ok_excludes_only_from_recommendation() -> None:
     assert recommended == []
     assert excluded[0]["screening_decision"] == "UNKNOWN"
     assert excluded[0]["recommendation_decision"] == "NOT_OK"
+
+
+def test_age_only_trial_is_reported_as_insufficient_not_100() -> None:
+    output = _output(
+        "TRIAL-AGE-ONLY",
+        status=CriterionStatus.EVIDENCE_FOUND,
+        decision="OK",
+    )
+    output.run.results = output.run.results[:1]
+    output.outcome.criteria_met = 1
+    output.outcome.criteria_total = 1
+
+    recommended, _ = TrialRanker().rank(
+        [output],
+        trial_catalog={
+            "TRIAL-AGE-ONLY": {"trial_name": "연령 기준만 있는 공고", "description": ""}
+        },
+        top_k=1,
+    )
+
+    assert recommended[0]["rank_score"] == 0.0
+    assert recommended[0]["recommendation_decision"] == "UNKNOWN"
+    assert recommended[0]["overall_status"] == "NEEDS_MORE_INFO"
+    assert "3개 미만" in recommended[0]["selection_reason"]
 
 
 def test_recommendation_api_runs_candidates_and_persists_result() -> None:
@@ -314,3 +341,44 @@ def test_recommendation_allows_empty_candidate_catalog() -> None:
     response = RecommendationRunResponse.model_validate(result)
     assert response.evaluated_trials == 0
     assert response.limits.recommendation_max_workers == 0
+
+
+def test_recommendation_passes_application_answers_only_to_its_trial() -> None:
+    calls: list[dict] = []
+
+    class ScreeningStub:
+        def run(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(run=SimpleNamespace(trial_id=kwargs["trial_id"]))
+
+    class RankerStub:
+        def rank(self, outputs, *, trial_catalog, top_k):
+            return ([{"trial_id": item.run.trial_id} for item in outputs], [])
+
+    class RunStoreStub:
+        def new_recommendation_id(self):
+            return "REC-answers"
+
+        def save_recommendation(self, recommendation_id, payload):
+            pass
+
+    orchestrator = RecommendationOrchestrator(
+        screening=ScreeningStub(),
+        repository=SimpleNamespace(trials={"T-1": {}, "T-2": {}}),
+        run_store=RunStoreStub(),
+        audit=SimpleNamespace(record=lambda *args, **kwargs: None),
+        ranker=RankerStub(),
+        max_workers=1,
+    )
+    answer = {"bmi": object()}
+
+    orchestrator.run(
+        person_id=1,
+        trial_ids=["T-1", "T-2"],
+        top_k=2,
+        actor="test",
+        supplements_by_trial={"T-2": answer},
+    )
+
+    assert "supplements" not in calls[0]
+    assert calls[1]["supplements"] is answer

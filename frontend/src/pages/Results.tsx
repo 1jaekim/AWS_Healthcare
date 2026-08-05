@@ -54,6 +54,7 @@ function CriterionRow({
   const label = DECISION_LABEL[criterion.screening_status]
   const failed =
     judgment?.verification?.checks.filter((check) => !check.passed) ?? []
+  const patientReported = criterion.evidence_ids.some((id) => id.startsWith('APP-'))
 
   return (
     <div className="verdict-row">
@@ -74,7 +75,11 @@ function CriterionRow({
         ) : null}
 
         <div className="muted" style={{ fontSize: 12, marginTop: 5 }}>
-          {criterion.evidence_ids.length ? '의료 기록 근거 확인됨' : '추가 확인 필요'}
+          {patientReported
+            ? '지원자 답변 근거 · 의료 기록 확인 필요'
+            : criterion.evidence_ids.length
+              ? '의료 기록 근거 확인됨'
+              : '추가 확인 필요'}
           {criterion.a2a_applied ? ' · 교차 검토 반영' : ''}
         </div>
 

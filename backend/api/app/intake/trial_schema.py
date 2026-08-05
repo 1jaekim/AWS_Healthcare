@@ -37,6 +37,24 @@ _TYPE_BY_KIND: dict[CriterionKind, str] = {
     CriterionKind.NARRATIVE: "string",
 }
 
+
+def _askable_kind(criterion: dict[str, Any]) -> CriterionKind | None:
+    """카탈로그 밖 필드도 구조화 연산자로 질문 타입을 추론한다."""
+    field_name = str(criterion.get("field") or "").strip()
+    known = spec_for(field_name)
+    if known.kind in ASKABLE_KINDS:
+        return known.kind
+    operator = str(criterion.get("operator") or "").strip().lower()
+    if operator in {">", ">=", "<", "<=", "between"}:
+        return CriterionKind.NUMERIC_POINT
+    if operator == "=" and str(criterion.get("value_low") or "").lower() in {
+        "true", "false", "yes", "no", "1", "0"
+    }:
+        return CriterionKind.DERIVED_BOOLEAN
+    if operator in {"=", "in", "not_in", "has"}:
+        return CriterionKind.CATEGORICAL
+    return None
+
 _MEASURED_KINDS = (CriterionKind.NUMERIC_POINT, CriterionKind.TEMPORAL_WINDOW)
 
 ASKABLE_KINDS = (
@@ -187,8 +205,10 @@ class TrialSchemaBuilder:
             lines.extend(["", f"[{title}]"])
             for item in group:
                 field = str(item.get("field") or "")
-                if field == "eligibility_note":
-                    lines.append(f"- {item.get('value_low') or '세부 요건 확인'}")
+                if field.startswith("criterion_inclusion_") or field.startswith(
+                    "criterion_exclusion_"
+                ):
+                    lines.append(f"- {item.get('label') or '세부 요건 확인'}")
                     continue
                 spec = spec_for(field)
                 label = _FIELD_LABELS.get(field, spec.label.replace("_", " "))
@@ -213,8 +233,8 @@ class TrialSchemaBuilder:
             seen.add(field_name)
 
             spec = spec_for(field_name)
-            kind = spec.kind
-            if kind not in ASKABLE_KINDS:
+            kind = _askable_kind(criterion)
+            if kind is None:
                 continue
             # 단위는 기준이 선언한 값을 그대로 쓴다. 판정 계층이 기준 단위와
             # 관찰값 단위를 비교하므로, 여기서 다른 단위를 붙이면 검증에서 걸린다.
@@ -223,12 +243,21 @@ class TrialSchemaBuilder:
             )
             exclusion = criterion.get("criterion_type") == "EXCLUSION"
 
+            label = str(criterion.get("label") or "").strip() or spec.label
+            if kind is CriterionKind.DERIVED_BOOLEAN:
+                description = (
+                    f"다음 제외 조건에 해당하나요? {label}"
+                    if exclusion
+                    else f"다음 참여 조건에 해당하나요? {label}"
+                )
+            else:
+                description = _question(label, kind, unit, exclusion)
             fields.append(
                 {
                     "name": field_name,
                     "type": _TYPE_BY_KIND.get(kind, "string"),
-                    "title": spec.label,
-                    "description": _question(spec.label, kind, unit, exclusion),
+                    "title": label,
+                    "description": description,
                     "criterion_field": field_name,
                     "unit": unit or None,
                 }

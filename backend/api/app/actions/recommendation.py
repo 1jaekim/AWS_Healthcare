@@ -19,6 +19,7 @@ _STATUS_SCORE = {
 }
 _A2A_SCORE = {"OK": 0.8, "NOT_OK": 0.1, "UNKNOWN": 0.4}
 _DECISION_ORDER = {"OK": 0, "UNKNOWN": 1, "NOT_OK": 2}
+_MIN_SCORABLE_CRITERIA = 3
 
 
 class TrialRanker:
@@ -87,11 +88,16 @@ class TrialRanker:
             recommendation_status = (
                 str(a2a["recommendation"]) if applied else screening_status
             )
-            score = (
-                _A2A_SCORE[recommendation_status]
-                if applied
-                else _STATUS_SCORE[result.status]
-            )
+            if result.patient_reported and result.rule_satisfied is not None:
+                # 자기보고 답변은 확정 판정으로 승격하지 않지만, 공고 조건과 실제로
+                # 비교한 잠정 점수에는 방향성을 반영한다.
+                score = 0.7 if result.rule_satisfied else 0.0
+            else:
+                score = (
+                    _A2A_SCORE[recommendation_status]
+                    if applied
+                    else _STATUS_SCORE[result.status]
+                )
             scores.append(score)
             if recommendation_status == "UNKNOWN":
                 unresolved.append(result.criterion_id)
@@ -122,6 +128,9 @@ class TrialRanker:
             recommendation_decision = "OK"
         else:
             recommendation_decision = "UNKNOWN"
+        criteria_sufficient = len(criteria) >= _MIN_SCORABLE_CRITERIA
+        if not criteria_sufficient and recommendation_decision != "NOT_OK":
+            recommendation_decision = "UNKNOWN"
         overall_status = {
             "OK": "MATCHED",
             "NOT_OK": "EXCLUDED",
@@ -140,18 +149,26 @@ class TrialRanker:
             "trial_id": output.run.trial_id,
             "title": trial["trial_name"],
             "description": trial.get("description", ""),
-            "rank_score": round(sum(scores) / len(scores), 3) if scores else 0.0,
+            "rank_score": (
+                round(sum(scores) / len(scores), 3)
+                if scores and criteria_sufficient
+                else 0.0
+            ),
             "overall_status": overall_status,
             "screening_decision": screening_decision,
             "recommendation_decision": recommendation_decision,
             "criteria_met": output.outcome.criteria_met,
             "criteria_total": output.outcome.criteria_total,
             "unresolved_criteria": unresolved,
-            "human_review_required": human_review_required,
+            "human_review_required": human_review_required or not criteria_sufficient,
             "review_ticket_id": output.review_ticket_id,
-            "selection_reason": self._selection_reason(
-                screening_decision,
-                recommendation_decision,
+            "selection_reason": (
+                "승인된 기준이 3개 미만이라 적합도를 계산하지 않았습니다."
+                if not criteria_sufficient
+                else self._selection_reason(
+                    screening_decision,
+                    recommendation_decision,
+                )
             ),
             "a2a": deliberation,
             "criteria": criteria,

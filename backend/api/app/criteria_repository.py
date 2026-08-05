@@ -11,6 +11,22 @@ from typing import Any
 _OPERATOR_ALIASES = {"==": "=", "eq": "=", "gte": ">=", "lte": "<="}
 
 
+def _field_key(value: Any) -> str:
+    key = re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip("_")
+    return key
+
+
+def _narrative_field(criterion_type: str, criterion_id: str) -> str:
+    return f"criterion_{criterion_type.lower()}_{_field_key(criterion_id)}"
+
+
+def _source_identity(item: dict[str, Any]) -> str:
+    """스크린샷과 상세 문서가 같은 수집 공고인지 판별하는 안정 키."""
+    source_key = str(item.get("source_key") or "")
+    match = re.search(r"(kct_[a-z0-9]+)", source_key.lower())
+    return match.group(1) if match else str(item.get("trial_id") or "")
+
+
 def normalize_operator(value: Any) -> str:
     operator = str(value or "").strip().lower()
     return _OPERATOR_ALIASES.get(operator, operator)
@@ -41,16 +57,26 @@ def flatten_protocol_item(item: dict[str, Any]) -> list[dict[str, str]]:
         rows = _decoded(item["criteria"])
         normalized: list[dict[str, str]] = []
         for row in rows:
+            criterion_id = str(row.get("criterion_id") or "")
+            criterion_type = str(row.get("criterion_type") or "").upper()
+            field = _field_key(row.get("field"))
+            operator = normalize_operator(row.get("operator"))
+            value_low = str(row.get("value_low") or "")
+            if field == "eligibility_note":
+                field = _narrative_field(criterion_type, criterion_id)
+                operator = "="
+                value_low = "true" if criterion_type == "INCLUSION" else "false"
             normalized.append(
                 {
-                    "criterion_id": str(row.get("criterion_id") or ""),
-                    "criterion_type": str(row.get("criterion_type") or "").upper(),
-                    "field": str(row.get("field") or "").strip().lower(),
-                    "operator": normalize_operator(row.get("operator")),
-                    "value_low": str(row.get("value_low") or ""),
+                    "criterion_id": criterion_id,
+                    "criterion_type": criterion_type,
+                    "field": field,
+                    "operator": operator,
+                    "value_low": value_low,
                     "value_high": str(row.get("value_high") or ""),
                     "unit": str(row.get("unit") or ""),
                     "time_window_days": str(row.get("time_window_days") or ""),
+                    "label": str(row.get("label") or row.get("description") or value_low),
                 }
             )
         return [
@@ -72,18 +98,20 @@ def flatten_protocol_item(item: dict[str, Any]) -> list[dict[str, str]]:
             if not structured:
                 description = str(raw.get("description") or "").strip()
                 if description:
+                    criterion_id = str(
+                        raw.get("id") or f"{criterion_type[:3]}-{index:03d}"
+                    )
                     rows.append(
                         {
-                            "criterion_id": str(
-                                raw.get("id") or f"{criterion_type[:3]}-{index:03d}"
-                            ),
+                            "criterion_id": criterion_id,
                             "criterion_type": criterion_type,
-                            "field": "eligibility_note",
-                            "operator": "has",
-                            "value_low": description,
+                            "field": _narrative_field(criterion_type, criterion_id),
+                            "operator": "=",
+                            "value_low": "true" if criterion_type == "INCLUSION" else "false",
                             "value_high": "",
-                            "unit": "",
+                            "unit": "boolean",
                             "time_window_days": "",
+                            "label": description,
                         }
                     )
                 continue
@@ -93,12 +121,13 @@ def flatten_protocol_item(item: dict[str, Any]) -> list[dict[str, str]]:
                 {
                     "criterion_id": str(raw.get("id") or f"{criterion_type[:3]}-{index:03d}"),
                     "criterion_type": criterion_type,
-                    "field": str(structured.get("parameter") or "").strip().lower().replace(" ", "_"),
+                    "field": _field_key(structured.get("parameter")),
                     "operator": operator,
                     "value_low": low,
                     "value_high": high,
                     "unit": str(structured.get("unit") or ""),
                     "time_window_days": str(structured.get("time_window_days") or ""),
+                    "label": str(raw.get("description") or structured.get("parameter") or ""),
                 }
             )
     return [row for row in rows if row["field"] and row["operator"]]
@@ -178,14 +207,19 @@ class DynamoDBCriteriaRepository:
         for item in items:
             if str(item.get("status", "")).lower() not in {"approved", "active"}:
                 continue
-            trial_id = str(item.get("trial_id") or "")
-            previous = latest.get(trial_id)
-            if trial_id and (
-                previous is None
-                or int(item.get("updated_at") or 0) > int(previous.get("updated_at") or 0)
-            ):
-                latest[trial_id] = item
-        return [self._summary(latest[key]) for key in sorted(latest)]
+            identity = _source_identity(item)
+            previous = latest.get(identity)
+            quality = (len(flatten_protocol_item(item)), int(item.get("updated_at") or 0))
+            previous_quality = (
+                len(flatten_protocol_item(previous)),
+                int(previous.get("updated_at") or 0),
+            ) if previous is not None else (-1, -1)
+            if identity and quality > previous_quality:
+                latest[identity] = item
+        return [
+            self._summary(item)
+            for item in sorted(latest.values(), key=lambda value: str(value.get("trial_id") or ""))
+        ]
 
     def trial_catalog(self, trial_ids: list[str]) -> dict[str, dict[str, Any]]:
         return {
@@ -231,8 +265,13 @@ class DynamoDBCriteriaRepository:
         if decision == "approved":
             if str(current.get("trial_title") or "").strip().upper() in {"", "UNKNOWN"}:
                 raise InvalidApproval("공고 제목이 확인되지 않아 승인할 수 없습니다.")
-            if not flatten_protocol_item(current):
+            rows = flatten_protocol_item(current)
+            if not rows:
                 raise InvalidApproval("구조화된 선정·제외 기준이 없어 승인할 수 없습니다.")
+            if len(rows) < 3:
+                raise InvalidApproval(
+                    "구조화 기준이 3개 미만입니다. 상세 기준을 다시 수집한 뒤 승인해 주세요."
+                )
 
         now = int(time.time())
         try:

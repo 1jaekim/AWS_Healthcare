@@ -72,6 +72,10 @@ class DeterministicAggregator:
             source_ids=tuple(dict.fromkeys(bundle.source_ids())),
             narrative=tuple(bundle.narrative),
             conflicts=verification.conflicts,
+            rule_satisfied=outcome.satisfied if outcome else None,
+            patient_reported=bool(
+                observation is not None and observation.source == "PATIENT_REPORTED"
+            ),
         )
 
     def _resolve_status(

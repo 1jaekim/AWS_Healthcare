@@ -81,7 +81,7 @@ export default function AdminTrials() {
         {error ? <div className="callout callout-danger" style={{ marginBottom: 16 }}>{error}</div> : null}
         <div className="stack-loose">
           {items.map((item) => {
-            const invalid = !item.criteria_count || !item.trial_title || item.trial_title.toUpperCase() === 'UNKNOWN'
+            const invalid = item.criteria_count < 3 || !item.trial_title || item.trial_title.toUpperCase() === 'UNKNOWN'
             return (
               <article key={item.source_key} style={{ border: '1px solid var(--color-neutral-200)', borderRadius: 12, padding: 20 }}>
                 <div className="row-between" style={{ alignItems: 'flex-start' }}>
@@ -116,7 +116,7 @@ export default function AdminTrials() {
                 </details>
                 {item.status === 'pending_review' ? (
                   <div style={{ marginTop: 16 }}>
-                    {invalid ? <p style={{ color: 'var(--color-danger)', fontSize: 13 }}>제목 또는 기준이 누락되어 승인할 수 없습니다. 반려 후 다시 수집하세요.</p> : null}
+                    {invalid ? <p style={{ color: 'var(--color-danger)', fontSize: 13 }}>제목이 없거나 기준이 3개 미만이라 승인할 수 없습니다. 상세 기준을 다시 수집하세요.</p> : null}
                     <textarea
                       aria-label={`${item.trial_id} 검토 메모`}
                       placeholder="승인·반려 사유 (선택)"

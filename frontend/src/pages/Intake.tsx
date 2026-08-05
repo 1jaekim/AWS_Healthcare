@@ -9,7 +9,7 @@
  *   → POST /applications                          (첫 서술 제출)
  *   → POST /applications/{id}/responses           (누락 항목 재질문, 최대 5회)
  *   → COMPLETE
- *   → POST /applications/{id}/screening           (환자 기록 연결 + 판정 실행)
+ *   → POST /recommendations/run + application_id  (답변 연결 + 추천 실행)
  *
  * 이 단계는 값을 모을 뿐 적격 여부를 판단하지 않는다. 판정은 마지막 screening
  * 호출부터 시작한다.
@@ -26,7 +26,6 @@ import { TRIAL_META } from '../api/mock'
 import type { ApplicationIntake, ApplicationSchema } from '../api/types'
 import AppHeader from '../components/AppHeader'
 import { ErrorNote, Loading, TextInput } from '../components/ui'
-import { useAuth } from '../auth/AuthContext'
 import { useMatching } from '../state/MatchingContext'
 
 const MAX_LENGTH = 2000
@@ -68,11 +67,9 @@ function renderValue(value: unknown): string {
 }
 
 export default function Intake() {
-  const { account } = useAuth()
   const navigate = useNavigate()
   const params = useParams<{ trialId: string }>()
   const { trials, recommendation, loadTrials } = useMatching()
-  const personId = account?.personId ?? 1
 
   const [stage, setStage] = useState<'write' | 'review'>('write')
   const [text, setText] = useState('')
@@ -226,9 +223,10 @@ export default function Intake() {
     setBusy(true)
     setError(null)
     try {
-      await api.screenApplication(intake.application_id, personId)
-      // 판정은 매칭 화면에서 실행하고, 끝나면 이 공고의 결과로 바로 보낸다.
-      navigate(`/matching?trial=${encodeURIComponent(intake.trial_id)}`)
+      navigate(
+        `/matching?trial=${encodeURIComponent(intake.trial_id)}` +
+          `&application=${encodeURIComponent(intake.application_id)}`,
+      )
     } catch (cause) {
       setError(cause)
     } finally {

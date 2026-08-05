@@ -178,12 +178,14 @@ export const api = {
     personId: number,
     topK = 3,
     trialIds?: string[],
+    applicationId?: string,
   ): Promise<RecommendationRun> =>
     mock
       ? mockApi.runRecommendations(personId, topK)
       : http.post<RecommendationRun>('/api/v1/recommendations/run', {
           person_id: personId,
           trial_ids: trialIds ?? null,
+          application_id: applicationId ?? null,
           top_k: topK,
           actor: config.actor,
         }),

@@ -43,13 +43,19 @@ class RecommendationOrchestrator:
         trial_ids: Sequence[str],
         top_k: int,
         actor: str,
+        supplements_by_trial: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         recommendation_id = self._runs.new_recommendation_id()
         def screen(trial_id: str) -> Any:
+            kwargs: dict[str, Any] = {}
+            supplement = (supplements_by_trial or {}).get(trial_id)
+            if supplement is not None:
+                kwargs["supplements"] = supplement
             return self._screening.run(
                 person_id=person_id,
                 trial_id=trial_id,
                 actor=actor,
+                **kwargs,
             )
 
         # executor.map은 입력 순서대로 결과를 돌려준다. 따라서 병렬 실행으로

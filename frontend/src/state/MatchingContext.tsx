@@ -39,7 +39,7 @@ export interface MatchingState {
   error: unknown
   ranAt: Date | null
   loadTrials: () => Promise<TrialSummary[]>
-  run: (personId: number, topK?: number) => Promise<RecommendationRun | null>
+  run: (personId: number, topK?: number, applicationId?: string) => Promise<RecommendationRun | null>
   loadRunDetail: (runId: string) => Promise<ScreeningRun | null>
   /** 공고 승인 등 후보 집합이 바뀌었을 때 이전 추천 스냅샷을 폐기한다. */
   invalidate: () => void
@@ -57,6 +57,7 @@ export function allTrials(recommendation: RecommendationRun | null): Recommended
 export function fitScore(trial: RecommendedTrial | undefined): string {
   if (!trial) return '—'
   if (trial.overall_status === 'EXCLUDED') return '제외'
+  if (trial.criteria_total < 3) return '자료 부족'
   return String(Math.round(trial.rank_score * 100))
 }
 
@@ -95,11 +96,11 @@ export function MatchingProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const run = useCallback(async (personId: number, topK = 3) => {
+  const run = useCallback(async (personId: number, topK = 3, applicationId?: string) => {
     setBusy(true)
     setError(null)
     try {
-      const result = await api.runRecommendations(personId, topK)
+      const result = await api.runRecommendations(personId, topK, undefined, applicationId)
       setRecommendation(result)
       setRanAt(new Date())
       return result

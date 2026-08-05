@@ -298,6 +298,7 @@ class RecommendationRunRequest(BaseModel):
 
     person_id: int = Field(gt=0)
     trial_ids: list[str] | None = Field(default=None, min_length=1, max_length=50)
+    application_id: str | None = Field(default=None, min_length=1, max_length=128)
     top_k: int = Field(default=3, ge=1, le=20)
     actor: str = Field(default="system", min_length=1)
 

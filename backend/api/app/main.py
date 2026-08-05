@@ -675,12 +675,37 @@ def run_recommendations(
             detail={"message": "Trial not found", "trial_ids": missing},
         )
 
+    supplements_by_trial: dict[str, dict[str, Any]] = {}
+    if payload.application_id:
+        try:
+            application, schema = container.application_intake.completed_application(
+                payload.application_id, owner_sub=principal.subject
+            )
+        except ApplicationNotFound as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="Application not found"
+            ) from exc
+        except ApplicationNotComplete as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Application must be COMPLETE before recommendations",
+            ) from exc
+        application_trial_id = str(application["trial_id"])
+        if application_trial_id not in trial_ids:
+            trial_ids.append(application_trial_id)
+        supplement_set = ApplicationSupplementBuilder().build(
+            application=application,
+            json_schema=schema["json_schema"],
+        )
+        supplements_by_trial[application_trial_id] = supplement_set.observations
+
     try:
         return container.recommendation_orchestrator.run(
             person_id=payload.person_id,
             trial_ids=trial_ids,
             top_k=payload.top_k,
             actor=payload.actor,
+            supplements_by_trial=supplements_by_trial,
         )
     except PatientNotFound as exc:
         raise HTTPException(

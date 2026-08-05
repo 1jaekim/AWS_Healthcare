@@ -37,11 +37,12 @@ export default function Matching() {
 
   // 지원서를 낸 공고가 있으면 그 공고 결과로 바로 보낸다. 없으면 전체 목록.
   const focusTrialId = searchParams.get('trial')
+  const applicationId = searchParams.get('application') ?? undefined
 
   useEffect(() => {
     if (started.current) return
     started.current = true
-    void run(personId, 3).then((result) => {
+    void run(personId, 3, applicationId).then((result) => {
       if (!result) return
       navigate(
         focusTrialId

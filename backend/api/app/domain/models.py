@@ -152,6 +152,8 @@ class CriterionResult:
     source_ids: tuple[str, ...]
     narrative: tuple[NarrativeSnippet, ...] = ()
     conflicts: tuple[str, ...] = ()
+    rule_satisfied: bool | None = None
+    patient_reported: bool = False
 
     def is_blocking(self) -> bool:
         """이 결과가 종합 판정을 부적합으로 확정시키는지 여부."""
