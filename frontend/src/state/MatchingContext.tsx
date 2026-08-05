@@ -39,7 +39,7 @@ export interface MatchingState {
   error: unknown
   ranAt: Date | null
   loadTrials: () => Promise<TrialSummary[]>
-  run: (personId: number, topK?: number, applicationId?: string) => Promise<RecommendationRun | null>
+  run: (personId: number | null, topK?: number, applicationId?: string) => Promise<RecommendationRun | null>
   loadRunDetail: (runId: string) => Promise<ScreeningRun | null>
   /** 공고 승인 등 후보 집합이 바뀌었을 때 이전 추천 스냅샷을 폐기한다. */
   invalidate: () => void
@@ -96,7 +96,7 @@ export function MatchingProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const run = useCallback(async (personId: number, topK = 3, applicationId?: string) => {
+  const run = useCallback(async (personId: number | null, topK = 3, applicationId?: string) => {
     setBusy(true)
     setError(null)
     try {

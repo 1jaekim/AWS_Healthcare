@@ -28,7 +28,6 @@ import {
   type FetchUserAttributesOutput,
 } from 'aws-amplify/auth'
 
-import { config } from '../api/client'
 import type {
   Account,
   AuthProvider,
@@ -114,7 +113,7 @@ function accountFromAttributes(
       mkt: attributes['custom:marketing_opt_in'] === 'true',
     },
     survey: surveyFromAttributes(attributes),
-    personId: Number.isFinite(personId) && personId > 0 ? personId : config.demoPersonId,
+    personId: Number.isFinite(personId) && personId > 0 ? personId : null,
     createdAt: attributes['custom:agreed_at'] ?? '',
     isAdmin,
   }

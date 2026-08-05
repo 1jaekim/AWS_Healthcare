@@ -33,7 +33,7 @@ export default function Matching() {
   const [searchParams] = useSearchParams()
   const started = useRef(false)
   const [stage, setStage] = useState(0)
-  const personId = account?.personId ?? 1
+  const personId = account?.personId ?? null
 
   // 지원서를 낸 공고가 있으면 그 공고 결과로 바로 보낸다. 없으면 전체 목록.
   const focusTrialId = searchParams.get('trial')
@@ -42,6 +42,7 @@ export default function Matching() {
   useEffect(() => {
     if (started.current) return
     started.current = true
+    if (!applicationId && personId === null) return
     void run(personId, 3, applicationId).then((result) => {
       if (!result) return
       navigate(
@@ -68,7 +69,7 @@ export default function Matching() {
     <div className="page-center">
       <div className="sheet" style={{ width: 520, maxWidth: '100%', padding: 'var(--space-8)' }}>
         <div className="kicker" style={{ marginBottom: 'var(--space-2)' }}>
-          person {personId}
+          {applicationId ? '지원서 프로필' : `person ${personId ?? '미연결'}`}
         </div>
         <h3 style={{ margin: '0 0 var(--space-2)' }}>적합한 임상시험을 찾고 있습니다</h3>
         <p

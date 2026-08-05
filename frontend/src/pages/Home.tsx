@@ -24,7 +24,7 @@ export default function Home() {
   const [filter, setFilter] = useState(ALL)
   const [showAllFields, setShowAllFields] = useState(false)
 
-  const personId = account?.personId ?? 1
+  const personId = account?.personId ?? null
 
   useEffect(() => {
     if (recommendation) return
@@ -32,7 +32,7 @@ export default function Home() {
     void (async () => {
       await loadTrials()
       if (cancelled) return
-      await run(personId, 3)
+      if (personId !== null) await run(personId, 3)
     })()
     return () => {
       cancelled = true
@@ -207,7 +207,7 @@ export default function Home() {
             <button
               className="btn btn-ghost"
               type="button"
-              disabled={busy}
+              disabled={busy || personId === null}
               style={{ minHeight: 42, marginTop: 0 }}
               onClick={() => void run(personId, 3)}
             >

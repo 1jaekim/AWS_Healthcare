@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from contextlib import asynccontextmanager
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -651,31 +652,8 @@ def run_recommendations(
     payload: RecommendationRunRequest, container: Ctx, principal: CurrentUser
 ) -> dict:
     """후보 공고를 모두 판정하고 제한형 A2A 결과까지 반영해 순위를 만든다."""
-    ensure_person_access(principal, payload.person_id)
-    if payload.person_id not in container.repository.patients:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Patient not found",
-        )
-
-    trial_ids = list(
-        dict.fromkeys(
-            payload.trial_ids
-            or [item["trial_id"] for item in _trial_catalog(container).list_trials()]
-        )
-    )
-    missing = [
-        trial_id
-        for trial_id in trial_ids
-        if not _trial_catalog(container).has_trial(trial_id)
-    ]
-    if missing:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail={"message": "Trial not found", "trial_ids": missing},
-        )
-
     supplements_by_trial: dict[str, dict[str, Any]] = {}
+    profile_only = False
     if payload.application_id:
         try:
             application, schema = container.application_intake.completed_application(
@@ -691,21 +669,55 @@ def run_recommendations(
                 detail="Application must be COMPLETE before recommendations",
             ) from exc
         application_trial_id = str(application["trial_id"])
-        if application_trial_id not in trial_ids:
-            trial_ids.append(application_trial_id)
+        # 지원서 흐름은 Cognito sub에서 만든 비식별 내부 ID와 사용자가 제출한
+        # 답변만 사용한다. 브라우저가 보낸 person_id나 합성 EMR을 섞지 않는다.
+        digest = hashlib.sha256(principal.subject.encode("utf-8")).digest()
+        person_id = 1_000_000_000 + int.from_bytes(digest[:4], "big") % 1_000_000_000
+        trial_ids = [application_trial_id]
         supplement_set = ApplicationSupplementBuilder().build(
             application=application,
             json_schema=schema["json_schema"],
         )
         supplements_by_trial[application_trial_id] = supplement_set.observations
+        profile_only = True
+    else:
+        if principal.person_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="지원서 또는 연결된 환자 프로필이 필요합니다.",
+            )
+        person_id = principal.person_id
+        ensure_person_access(principal, person_id)
+        if person_id not in container.repository.patients:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Patient not found",
+            )
+        trial_ids = list(
+            dict.fromkeys(
+                payload.trial_ids
+                or [item["trial_id"] for item in _trial_catalog(container).list_trials()]
+            )
+        )
+    missing = [
+        trial_id
+        for trial_id in trial_ids
+        if not _trial_catalog(container).has_trial(trial_id)
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"message": "Trial not found", "trial_ids": missing},
+        )
 
     try:
         return container.recommendation_orchestrator.run(
-            person_id=payload.person_id,
+            person_id=person_id,
             trial_ids=trial_ids,
             top_k=payload.top_k,
             actor=payload.actor,
             supplements_by_trial=supplements_by_trial,
+            allow_profile_only=profile_only,
         )
     except PatientNotFound as exc:
         raise HTTPException(

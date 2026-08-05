@@ -127,7 +127,7 @@ class TrialDetail(TrialSummary):
 
 
 class ScreeningRequest(BaseModel):
-    person_id: int = Field(gt=0)
+    person_id: int | None = Field(default=None, gt=0)
     trial_id: str = Field(min_length=1)
 
 

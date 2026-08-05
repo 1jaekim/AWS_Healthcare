@@ -175,13 +175,13 @@ export const api = {
 
   /** 후보 공고 전체를 판정하고 A2A 를 반영해 정렬한다. 홈·결과 화면의 주 호출. */
   runRecommendations: (
-    personId: number,
+    personId: number | null,
     topK = 3,
     trialIds?: string[],
     applicationId?: string,
   ): Promise<RecommendationRun> =>
     mock
-      ? mockApi.runRecommendations(personId, topK)
+      ? mockApi.runRecommendations(personId ?? config.demoPersonId, topK)
       : http.post<RecommendationRun>('/api/v1/recommendations/run', {
           person_id: personId,
           trial_ids: trialIds ?? null,

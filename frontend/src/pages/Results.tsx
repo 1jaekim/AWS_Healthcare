@@ -253,12 +253,12 @@ export default function Results() {
   const navigate = useNavigate()
   const { recommendation, runs, busy, error, run, loadRunDetail } = useMatching()
   const [openId, setOpenId] = useState<string | null>(trialId ?? null)
-  const personId = account?.personId ?? 1
+  const personId = account?.personId ?? null
 
   useEffect(() => {
     if (recommendation) return
     // 전체 후보를 보려는 화면이므로 top_k 를 넉넉히 잡는다.
-    void run(personId, 20)
+    if (personId !== null) void run(personId, 20)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [personId])
 

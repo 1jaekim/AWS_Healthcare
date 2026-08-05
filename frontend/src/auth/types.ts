@@ -38,7 +38,7 @@ export interface Account {
    * 이 계정이 바인딩된 합성 EMR 환자 번호.
    * 백엔드 API 는 전부 person_id 로 말하기 때문에 이 연결이 필요하다.
    */
-  personId: number
+  personId: number | null
   createdAt: string
   /** Cognito `admin` 그룹 소속 여부. 화면 노출용이며 최종 권한은 API가 검증한다. */
   isAdmin: boolean

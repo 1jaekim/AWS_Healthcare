@@ -44,6 +44,7 @@ class RecommendationOrchestrator:
         top_k: int,
         actor: str,
         supplements_by_trial: dict[str, dict[str, Any]] | None = None,
+        allow_profile_only: bool = False,
     ) -> dict[str, Any]:
         recommendation_id = self._runs.new_recommendation_id()
         def screen(trial_id: str) -> Any:
@@ -51,6 +52,8 @@ class RecommendationOrchestrator:
             supplement = (supplements_by_trial or {}).get(trial_id)
             if supplement is not None:
                 kwargs["supplements"] = supplement
+            if allow_profile_only:
+                kwargs["allow_profile_only"] = True
             return self._screening.run(
                 person_id=person_id,
                 trial_id=trial_id,

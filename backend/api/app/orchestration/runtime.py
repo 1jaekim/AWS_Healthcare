@@ -108,6 +108,7 @@ class ScreeningOrchestrator:
         trial_id: str,
         actor: str = "system",
         supplements: dict[str, Observation] | None = None,
+        allow_profile_only: bool = False,
     ) -> ScreeningOutput:
         """스크리닝 한 건을 실행한다.
 
@@ -116,7 +117,12 @@ class ScreeningOrchestrator:
         """
         index_row = self._timeline_tool.index_encounter(person_id)
         if index_row is None:
-            raise PatientNotFound(f"환자 타임라인을 찾을 수 없습니다: {person_id}")
+            if not allow_profile_only or not supplements:
+                raise PatientNotFound(f"환자 타임라인을 찾을 수 없습니다: {person_id}")
+            index_row = {
+                "encounter_id": f"APPLICATION-{person_id}",
+                "encounter_date": datetime.now(UTC).date().isoformat(),
+            }
 
         run_id = self._runs.new_run_id()
         context = ToolContext(
