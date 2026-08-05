@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any
 
@@ -29,7 +30,8 @@ def _bounds(value: Any, operator: str) -> tuple[str, str]:
         return (json.dumps(value, ensure_ascii=False) if isinstance(value, list) else str(value or ""), "")
     if isinstance(value, list) and len(value) >= 2:
         return str(value[0]), str(value[1])
-    parts = [part.strip() for part in str(value or "").replace("~", ",").split(",")]
+    normalized = re.sub(r"(?<=\d)\s*[-–~]\s*(?=\d)", ",", str(value or ""))
+    parts = [part.strip() for part in normalized.split(",")]
     return (parts[0], parts[1]) if len(parts) >= 2 else ("", "")
 
 
@@ -67,6 +69,24 @@ def flatten_protocol_item(item: dict[str, Any]) -> list[dict[str, str]]:
     ):
         for index, raw in enumerate(_decoded(item.get(key)), start=1):
             structured = raw.get("structured") or {}
+            if not structured:
+                description = str(raw.get("description") or "").strip()
+                if description:
+                    rows.append(
+                        {
+                            "criterion_id": str(
+                                raw.get("id") or f"{criterion_type[:3]}-{index:03d}"
+                            ),
+                            "criterion_type": criterion_type,
+                            "field": "eligibility_note",
+                            "operator": "has",
+                            "value_low": description,
+                            "value_high": "",
+                            "unit": "",
+                            "time_window_days": "",
+                        }
+                    )
+                continue
             operator = normalize_operator(structured.get("operator"))
             low, high = _bounds(structured.get("value"), operator)
             rows.append(

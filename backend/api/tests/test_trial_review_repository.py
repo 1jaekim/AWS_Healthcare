@@ -8,6 +8,7 @@ from app.criteria_repository import (
     DynamoDBCriteriaRepository,
     InvalidApproval,
     ReviewAlreadyDecided,
+    flatten_protocol_item,
 )
 
 
@@ -107,3 +108,30 @@ def test_already_decided_notice_cannot_be_changed() -> None:
             decision="approved",
             reviewed_by="cognito:admin-sub",
         )
+
+
+def test_legacy_range_and_unstructured_criterion_are_preserved() -> None:
+    rows = flatten_protocol_item(
+        {
+            "inclusion_criteria": [
+                {
+                    "id": "INC-001",
+                    "description": "18세 이상 65세 이하",
+                    "structured": {
+                        "parameter": "age",
+                        "operator": "between",
+                        "value": "18-65",
+                        "unit": "years",
+                    },
+                },
+                {
+                    "id": "INC-002",
+                    "description": "서면 동의가 가능한 사람",
+                    "structured": None,
+                },
+            ]
+        }
+    )
+    assert (rows[0]["value_low"], rows[0]["value_high"]) == ("18", "65")
+    assert rows[1]["field"] == "eligibility_note"
+    assert rows[1]["value_low"] == "서면 동의가 가능한 사람"

@@ -40,7 +40,7 @@ table = dynamodb.Table(CRITERIA_TABLE)
 
 # ─── Bedrock 프롬프트 ────────────────────────────────────
 PARSING_PROMPT = """당신은 임상시험 프로토콜 분석 전문가입니다.
-아래 임상시험 공고 텍스트에서 선정 기준(Inclusion Criteria)과 제외 기준(Exclusion Criteria)을 구조화된 JSON으로 추출하세요.
+아래 임상시험 공고 텍스트에서 선정 기준(Inclusion Criteria)과 제외 기준(Exclusion Criteria)을 구조화된 JSON으로 추출하세요. 탭별 본문에 있는 조건을 하나도 요약하거나 합치지 말고 조건 문장마다 배열 항목 하나로 보존하세요.
 
 ## 출력 형식 (JSON)
 {{
@@ -53,7 +53,7 @@ PARSING_PROMPT = """당신은 임상시험 프로토콜 분석 전문가입니�
     {{
       "id": "INC-001",
       "category": "demographics|diagnosis|lab_values|medical_history|consent|other",
-      "description": "기준 설명 (원문 기반)",
+      "description": "기준 설명 (영문 원문이면 정확한 한국어 번역)",
       "structured": {{
         "parameter": "측정 항목 (예: age, HbA1c, eGFR)",
         "operator": ">=|<=|==|between|in|not_in",
@@ -66,7 +66,7 @@ PARSING_PROMPT = """당신은 임상시험 프로토콜 분석 전문가입니�
     {{
       "id": "EXC-001",
       "category": "demographics|diagnosis|lab_values|medical_history|medication|allergy|other",
-      "description": "기준 설명 (원문 기반)",
+      "description": "기준 설명 (영문 원문이면 정확한 한국어 번역)",
       "structured": {{
         "parameter": "측정 항목",
         "operator": ">=|<=|==|has|not_has",
@@ -83,6 +83,8 @@ PARSING_PROMPT = """당신은 임상시험 프로토콜 분석 전문가입니�
 3. 수치가 없는 정성적 기준은 structured를 null로 설정
 4. trial_id가 명시되지 않으면 "UNKNOWN"으로 설정
 5. JSON만 출력하세요 (추가 설명 없이)
+6. 질환·단계·기준 설명은 한국어로 쓰되 약물명·고유 시험명은 원문을 병기하세요
+7. structured가 null인 정성 조건도 절대 버리지 말고 description과 함께 포함하세요
 
 ## 임상시험 공고 텍스트
 {document_text}
@@ -271,8 +273,12 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     # 않도록 S3 source key의 안정적인 해시를 식별자로 사용한다.
     parsed_trial_id = str(trial_data.get("trial_id") or "").strip()
     if not parsed_trial_id or parsed_trial_id.upper() == "UNKNOWN":
+        metadata = s3_client.head_object(Bucket=bucket, Key=source_key).get(
+            "Metadata", {}
+        )
+        canonical = str(metadata.get("canonical-trial-id") or "").strip()
         source_digest = hashlib.sha256(source_key.encode("utf-8")).hexdigest()[:16]
-        trial_data["trial_id"] = f"SRC-{source_digest}"
+        trial_data["trial_id"] = canonical or f"SRC-{source_digest}"
 
     # 3. DynamoDB 저장
     try:

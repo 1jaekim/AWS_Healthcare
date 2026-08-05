@@ -285,7 +285,14 @@ export default function Intake() {
             {TRIAL_META[trialId] ?? trialId}
           </div>
 
-          <h2 style={{ margin: '0 0 var(--space-3)', fontSize: 28, maxWidth: '24ch' }}>
+          <h2
+            style={{
+              margin: '0 0 var(--space-3)',
+              fontSize: 28,
+              wordBreak: 'keep-all',
+              overflowWrap: 'break-word',
+            }}
+          >
             현재 건강 상태를 편하게 적어주세요
           </h2>
           <p

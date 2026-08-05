@@ -74,11 +74,8 @@ function CriterionRow({
         ) : null}
 
         <div className="muted" style={{ fontSize: 12, marginTop: 5 }}>
-          근거{' '}
-          {criterion.evidence_ids.length ? criterion.evidence_ids.join(', ') : '없음'} ·
-          기준 {criterion.criterion_id}
-          {judgment?.route ? ` · 경로 ${judgment.route}` : ''}
-          {criterion.a2a_applied ? ' · A2A 교차 검토 반영' : ''}
+          {criterion.evidence_ids.length ? '의료 기록 근거 확인됨' : '추가 확인 필요'}
+          {criterion.a2a_applied ? ' · 교차 검토 반영' : ''}
         </div>
 
         {/* 모델 제안과 최종 상태가 갈린 경우만 드러낸다. 같으면 잡음이다. */}
@@ -176,7 +173,6 @@ function ResultCard({
           {trial.human_review_required ? (
             <div className="banner banner-warn" style={{ marginBottom: 'var(--space-4)' }}>
               확인되지 않은 기준이 있어 사람 검토가 필요합니다.
-              {trial.review_ticket_id ? ` (검토 ${trial.review_ticket_id})` : ''}
             </div>
           ) : null}
 
@@ -227,7 +223,7 @@ function ResultCard({
               type="button"
               style={{ minHeight: 42, marginTop: 0 }}
               disabled={excluded}
-              onClick={() => navigate('/intake')}
+              onClick={() => navigate(`/intake/${encodeURIComponent(trial.trial_id)}`)}
             >
               {unresolved ? '지금 답변하기' : '참여 가능 확인'}
             </button>
@@ -282,9 +278,6 @@ export default function Results() {
             <h2 style={{ margin: 0, fontSize: 30 }}>
               추천 임상시험 {recommended.length}건
             </h2>
-            <span className="muted" style={{ fontSize: 12.5 }}>
-              {recommendation ? recommendation.recommendation_id : ''}
-            </span>
           </div>
 
           <p

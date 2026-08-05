@@ -60,6 +60,7 @@ def capture(
     prefix = "kct" if source == "KoreaClinicalTrials" else "medi25"
     screenshot_path = output_dir / f"{prefix}_{page_id}_{captured_at}.png"
     metadata_path = output_dir / f"{prefix}_{page_id}_{captured_at}.json"
+    document_path = output_dir / f"{prefix}_{page_id}_{captured_at}.txt"
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
@@ -98,12 +99,29 @@ def capture(
               return count;
             }
         """)
-        body_text = page.locator("body").inner_text(timeout=timeout_ms).strip()
+        sections = [page.locator("body").inner_text(timeout=timeout_ms).strip()]
+        # KONECT 상세는 한 URL 안의 탭으로 선정·제외 기준을 숨긴다. full_page
+        # screenshot도 현재 탭만 담으므로 각 공개 탭을 눌러 텍스트를 합친다.
+        for label in (
+            "대상자 선정기준",
+            "대상자 제외기준",
+            "연구설계 및 수행방법",
+        ):
+            target = page.get_by_text(label, exact=True)
+            if not target.count():
+                continue
+            try:
+                target.last.click(timeout=3_000)
+                page.wait_for_timeout(300)
+                visible = page.locator("body").inner_text(timeout=timeout_ms).strip()
+                sections.append(f"\n[{label}]\n{visible}")
+            except PlaywrightTimeoutError:
+                continue
+        body_text = "\n".join(dict.fromkeys(sections))
         page.screenshot(path=str(screenshot_path), full_page=True)
         browser.close()
 
-    # 본문 원문은 로그인 사용자 정보가 섞일 수 있어 파일로 저장하지 않는다.
-    # Bedrock 전달 시에도 화면에 계정 정보가 없는 공개 공고인지 먼저 검토해야 한다.
+    # 공개 페이지이고 연락처 마스킹을 마친 경우에만 파서 입력 문서를 저장한다.
     login_gate = (
         "/login/" in final_url
         or "회원로그인" in title
@@ -134,11 +152,39 @@ def capture(
         # 공고를 정기 수집할 때 timestamp 키를 계속 만들면 CriteriaStore에도
         # 중복 버전이 끝없이 쌓인다. 고정 키를 덮어쓰면 원문 최신화는 유지하면서
         # 공고별 파이프라인 입력 키는 안정적으로 재사용할 수 있다.
-        s3_key = f"{s3_prefix.rstrip('/')}/{prefix}_{page_id}.png"
+        document_path.write_text(body_text, encoding="utf-8")
+        evidence_key = f"raw/trials/screenshots/{prefix}_{page_id}.png"
+        s3_key = f"trials/documents/{prefix}_{page_id}.txt"
+        canonical_trial_id = ""
+        try:
+            from boto3.dynamodb.conditions import Attr
+
+            criteria_table = boto3.resource("dynamodb").Table("CriteriaStore")
+            existing: list[dict] = []
+            scan_args: dict = {
+                "FilterExpression": Attr("source_key").contains(page_id),
+                "ProjectionExpression": "trial_id",
+            }
+            while not existing:
+                response = criteria_table.scan(**scan_args)
+                existing = response.get("Items", [])
+                last_key = response.get("LastEvaluatedKey")
+                if existing or not last_key:
+                    break
+                scan_args["ExclusiveStartKey"] = last_key
+            if existing:
+                canonical_trial_id = str(existing[0].get("trial_id") or "")
+        except Exception:
+            # 로컬 파일 캡처는 AWS 조회 없이도 가능해야 한다.
+            canonical_trial_id = ""
+        if not canonical_trial_id:
+            canonical_trial_id = "SRC-" + hashlib.sha256(
+                f"{s3_prefix.rstrip('/')}/{prefix}_{page_id}.png".encode("utf-8")
+            ).hexdigest()[:16]
         boto3.client("s3").upload_file(
             str(screenshot_path),
             s3_bucket,
-            s3_key,
+            evidence_key,
             ExtraArgs={
                 "ContentType": "image/png",
                 "Metadata": {
@@ -150,7 +196,23 @@ def capture(
                 },
             },
         )
+        boto3.client("s3").upload_file(
+            str(document_path),
+            s3_bucket,
+            s3_key,
+            ExtraArgs={
+                "ContentType": "text/plain; charset=utf-8",
+                "Metadata": {
+                    "source-url": quote(final_url, safe=":/?&=%#"),
+                    "source-url-sha256": page_id,
+                    "canonical-trial-id": canonical_trial_id,
+                    "source": prefix,
+                    "captured-at": captured_at,
+                },
+            },
+        )
         metadata["s3_uri"] = f"s3://{s3_bucket}/{s3_key}"
+        metadata["screenshot_s3_uri"] = f"s3://{s3_bucket}/{evidence_key}"
     metadata_path.write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
     )

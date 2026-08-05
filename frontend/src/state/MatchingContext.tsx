@@ -119,8 +119,8 @@ export function MatchingProvider({ children }: { children: ReactNode }) {
         setRuns((prev) => ({ ...prev, [runId]: detail }))
         return detail
       } catch (cause) {
-        // 상세를 못 가져와도 목록은 그대로 보여준다. 치명적이지 않다.
-        setError(cause)
+        // 추천 응답 자체에 기준별 결과가 있다. Lambda 실행 환경이 바뀌어 선택적
+        // 검증 상세가 사라져도 전체 결과 화면을 오류로 덮지 않는다.
         return null
       }
     },

@@ -59,6 +59,19 @@ ASKABLE_KINDS = (
 
 EXCLUSION_NOTE = "이 공고의 제외 조건 확인에 사용합니다."
 
+_KOREAN_PURPOSE = {
+    "endocrine & metabolism": "내분비·대사",
+    "endocrine&metabolism": "내분비·대사",
+    "oncology": "종양",
+    "hematology": "혈액질환",
+    "covid-19": "코로나19",
+}
+
+
+def _korean(value: Any) -> str:
+    text = str(value or "").strip()
+    return _KOREAN_PURPOSE.get(text.casefold(), text)
+
 
 @dataclass(frozen=True)
 class TrialSchemaRequest:
@@ -126,8 +139,8 @@ class TrialSchemaBuilder:
         lines = [
             str(trial.get("trial_name") or trial.get("trial_id") or ""),
             "",
-            f"분야: {trial.get('purpose') or '미분류'}",
-            str(trial.get("description") or ""),
+            f"분야: {_korean(trial.get('purpose')) or '미분류'}",
+            _korean(trial.get("description")),
         ]
 
         inclusion = [item for item in criteria if item.get("criterion_type") == "INCLUSION"]

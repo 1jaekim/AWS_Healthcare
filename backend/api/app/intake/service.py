@@ -297,7 +297,17 @@ class IntakeService:
         payload = response.json_payload() or {}
         raw_values = payload.get("values")
         if not isinstance(raw_values, dict):
-            raise IntakeExtractionError("모델이 values 객체를 반환하지 않았습니다.")
+            raw_values = payload.get("data")
+        if not isinstance(raw_values, dict):
+            # Claude가 지시와 달리 values 래퍼 없이 스키마 필드를 바로 반환하는
+            # 경우도 안전하게 수용한다. 스키마 밖 키는 아래 검증에서 제거된다.
+            properties = json_schema.get("properties", {})
+            direct = {key: value for key, value in payload.items() if key in properties}
+            raw_values = direct if direct else None
+        if not isinstance(raw_values, dict):
+            raise IntakeExtractionError(
+                "답변을 구조화하지 못했습니다. 문장을 조금 더 구체적으로 적어주세요."
+            )
         return self._validate_values(json_schema, raw_values)
 
     @classmethod

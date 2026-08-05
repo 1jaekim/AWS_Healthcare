@@ -65,6 +65,20 @@ def test_schema_keeps_base_fields_and_adds_notice_fields() -> None:
     }
 
 
+def test_extract_accepts_direct_schema_fields_without_values_wrapper() -> None:
+    service = _service({"age": 42, "current_medications": ["메트포르민"]})
+    schema = service.generate_schema(
+        trial_id="TRIAL-DIRECT", notice_text="기본 정보", additional_fields=[]
+    )
+
+    result = service.start_application(
+        schema_id=schema["schema_id"], application_text="42세이고 메트포르민 복용 중"
+    )
+
+    assert result["data"]["age"] == 42
+    assert result["data"]["current_medications"] == ["메트포르민"]
+
+
 def test_completed_json_maps_scalar_fields_to_orchestrator_supplements() -> None:
     application = {
         "application_id": "APP-1",
