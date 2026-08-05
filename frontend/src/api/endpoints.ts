@@ -26,6 +26,8 @@ import type {
   ScreeningRun,
   TimelineResponse,
   TrialDetail,
+  TrialReviewItem,
+  TrialReviewStatus,
   TrialSummary,
 } from './types'
 
@@ -57,6 +59,22 @@ export const api = {
 
   getTrial: (trialId: string): Promise<TrialDetail> =>
     http.get<TrialDetail>(`/api/v1/trials/${encodeURIComponent(trialId)}`),
+
+  listTrialReviews: (
+    status: TrialReviewStatus = 'pending_review',
+  ): Promise<TrialReviewItem[]> =>
+    http.get<TrialReviewItem[]>('/api/v1/admin/trials', { status }),
+
+  decideTrialReview: (
+    trialId: string,
+    sourceKey: string,
+    decision: 'approved' | 'rejected',
+    note: string,
+  ): Promise<TrialReviewItem> =>
+    http.patch<TrialReviewItem>(
+      `/api/v1/admin/trials/${encodeURIComponent(trialId)}/review`,
+      { source_key: sourceKey, decision, note },
+    ),
 
   // -- 자연어 지원서 ---------------------------------------------------------
   //

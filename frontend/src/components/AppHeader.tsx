@@ -36,6 +36,11 @@ export default function AppHeader() {
         <Link to="/intake" style={{ color: 'var(--color-accent-700)' }}>
           내 정보 보완
         </Link>
+        {account?.isAdmin ? (
+          <Link to="/admin/trials" style={{ color: 'var(--color-accent-700)' }}>
+            공고 승인
+          </Link>
+        ) : null}
         <span className="muted">{account?.name ?? '회원'}님</span>
         <button
           type="button"

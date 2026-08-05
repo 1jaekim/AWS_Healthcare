@@ -82,6 +82,7 @@ export class LocalAuthProvider implements AuthProvider {
       survey: null,
       personId: config.demoPersonId,
       createdAt: new Date().toISOString(),
+      isAdmin: false,
       passwordHash: await hash(input.password, email),
     }
 

@@ -160,7 +160,10 @@ class ApiStack(Stack):
                 )
             )
 
-        criteria_table.grant_read_data(self.function)
+        # 일반 사용자는 승인 데이터만 읽고, 관리자 검토 API 는 대기 레코드의
+        # 상태와 감사 필드를 원자적으로 갱신한다. 권한 판정은 Cognito admin
+        # 그룹을 검증하는 API 계층에서 수행한다.
+        criteria_table.grant_read_write_data(self.function)
         pseudonym_secret.grant_read(self.function)
 
         # ─── 공개 진입점 ─────────────────────────────────

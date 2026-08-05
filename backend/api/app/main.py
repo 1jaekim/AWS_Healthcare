@@ -17,6 +17,7 @@ from .auth import (
 )
 from .config import settings
 from .container import Container, build_container
+from .criteria_repository import InvalidApproval, ReviewAlreadyDecided
 from .intake import (
     ApplicationNotComplete,
     ApplicationNotFound,
@@ -62,6 +63,8 @@ from .schemas import (
     ScreeningRunResponse,
     TimelineResponse,
     TrialDetail,
+    TrialReviewDecisionRequest,
+    TrialReviewItemOut,
     TrialSummary,
 )
 
@@ -926,6 +929,70 @@ def normalize_intake(payload: IntakeRequest, container: Ctx) -> dict:
 # ---------------------------------------------------------------------------
 # 검토 큐
 # ---------------------------------------------------------------------------
+
+
+@app.get(
+    "/api/v1/admin/trials",
+    response_model=list[TrialReviewItemOut],
+    tags=["admin trials"],
+)
+def list_trial_reviews(
+    container: Ctx,
+    _: AdminUser,
+    review_status: Annotated[
+        str, Query(alias="status", pattern="^(pending_review|approved|rejected)$")
+    ] = "pending_review",
+    limit: Annotated[int, Query(ge=1, le=100)] = 100,
+) -> list[dict]:
+    catalog = _trial_catalog(container)
+    if not hasattr(catalog, "list_for_review"):
+        return []
+    return catalog.list_for_review(status=review_status, limit=limit)
+
+
+@app.patch(
+    "/api/v1/admin/trials/{trial_id}/review",
+    response_model=TrialReviewItemOut,
+    tags=["admin trials"],
+)
+def decide_trial_review(
+    trial_id: str,
+    payload: TrialReviewDecisionRequest,
+    container: Ctx,
+    principal: AdminUser,
+) -> dict:
+    """관리자가 파서 결과 한 버전을 승인 또는 반려한다."""
+    catalog = _trial_catalog(container)
+    if not hasattr(catalog, "decide_review"):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="운영 공고 저장소가 구성되지 않았습니다.",
+        )
+    try:
+        item = catalog.decide_review(
+            trial_id=trial_id,
+            source_key=payload.source_key,
+            decision=payload.decision,
+            reviewed_by=principal.actor,
+            note=payload.note.strip(),
+        )
+    except InvalidApproval as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except ReviewAlreadyDecided as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="공고를 찾을 수 없습니다.")
+    container.audit.record(
+        "TRIAL_REVIEW_DECIDED",
+        actor=principal.actor,
+        trial_id=trial_id,
+        source_key=payload.source_key,
+        status=payload.decision,
+        note=payload.note.strip(),
+    )
+    return item
 
 
 @app.get(

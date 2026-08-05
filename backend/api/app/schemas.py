@@ -485,6 +485,29 @@ class ReviewDecisionRequest(BaseModel):
     note: str | None = None
 
 
+class TrialReviewItemOut(BaseModel):
+    trial_id: str
+    source_key: str
+    status: Literal["pending_review", "approved", "rejected"]
+    trial_title: str
+    condition: str
+    phase: str
+    intervention: str
+    criteria: list[TrialCriterion]
+    criteria_count: int
+    created_at: int
+    updated_at: int
+    reviewed_at: int | None = None
+    reviewed_by: str | None = None
+    review_note: str | None = None
+
+
+class TrialReviewDecisionRequest(BaseModel):
+    source_key: str = Field(min_length=1)
+    decision: Literal["approved", "rejected"]
+    note: str = Field(default="", max_length=1000)
+
+
 class AuditEventOut(BaseModel):
     event_id: str
     sequence_no: int

@@ -1,6 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 
-import { AuthProvider, RequireAuth, useAuth } from './auth/AuthContext'
+import { AuthProvider, RequireAdmin, RequireAuth, useAuth } from './auth/AuthContext'
 import { MatchingProvider } from './state/MatchingContext'
 import Home from './pages/Home'
 import Intake from './pages/Intake'
@@ -12,6 +12,7 @@ import Signup from './pages/Signup'
 import SignupDone from './pages/SignupDone'
 import Survey from './pages/Survey'
 import Verify from './pages/Verify'
+import AdminTrials from './pages/AdminTrials'
 
 /** 로그인했으면 홈, 아니면 로그인. 세션 복원이 끝날 때까지 기다린다. */
 function Landing() {
@@ -102,6 +103,14 @@ export default function App() {
               <RequireAuth>
                 <Report />
               </RequireAuth>
+            }
+          />
+          <Route
+            path="/admin/trials"
+            element={
+              <RequireAdmin>
+                <AdminTrials />
+              </RequireAdmin>
             }
           />
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 
@@ -176,6 +177,88 @@ class DynamoDBCriteriaRepository:
     def trial_criteria(self, trial_id: str) -> list[dict[str, Any]]:
         return flatten_protocol_item(self._approved_item(trial_id) or {})
 
+    def list_for_review(self, *, status: str = "pending_review", limit: int = 100) -> list[dict[str, Any]]:
+        """상태 인덱스로 관리자 검토 대상을 최신순 조회한다."""
+        from boto3.dynamodb.conditions import Key
+
+        response = self._get_table().query(
+            IndexName="status-index",
+            KeyConditionExpression=Key("status").eq(status),
+            ScanIndexForward=False,
+            Limit=limit,
+        )
+        return [self._review_item(item) for item in response.get("Items", [])]
+
+    def decide_review(
+        self,
+        *,
+        trial_id: str,
+        source_key: str,
+        decision: str,
+        reviewed_by: str,
+        note: str = "",
+    ) -> dict[str, Any] | None:
+        """대기 중인 정확한 버전 하나만 원자적으로 승인 또는 반려한다."""
+        table = self._get_table()
+        current = table.get_item(
+            Key={"trial_id": trial_id, "source_key": source_key},
+            ConsistentRead=True,
+        ).get("Item")
+        if current is None:
+            return None
+        if str(current.get("status") or "").lower() != "pending_review":
+            raise ReviewAlreadyDecided("이미 검토가 완료된 공고입니다.")
+        if decision == "approved":
+            if str(current.get("trial_title") or "").strip().upper() in {"", "UNKNOWN"}:
+                raise InvalidApproval("공고 제목이 확인되지 않아 승인할 수 없습니다.")
+            if not flatten_protocol_item(current):
+                raise InvalidApproval("구조화된 선정·제외 기준이 없어 승인할 수 없습니다.")
+
+        now = int(time.time())
+        try:
+            response = table.update_item(
+                Key={"trial_id": trial_id, "source_key": source_key},
+                UpdateExpression=(
+                    "SET #status = :decision, reviewed_at = :now, reviewed_by = :actor, "
+                    "review_note = :note, updated_at = :now"
+                ),
+                ConditionExpression="#status = :pending",
+                ExpressionAttributeNames={"#status": "status"},
+                ExpressionAttributeValues={
+                    ":decision": decision,
+                    ":pending": "pending_review",
+                    ":now": now,
+                    ":actor": reviewed_by,
+                    ":note": note,
+                },
+                ReturnValues="ALL_NEW",
+            )
+        except Exception as exc:  # boto3 예외 타입은 선택 의존성이라 런타임 판별
+            if getattr(exc, "response", {}).get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+                raise ReviewAlreadyDecided("이미 검토가 완료된 공고입니다.") from exc
+            raise
+        return self._review_item(response["Attributes"])
+
+    @staticmethod
+    def _review_item(item: dict[str, Any]) -> dict[str, Any]:
+        rows = flatten_protocol_item(item)
+        return {
+            "trial_id": str(item.get("trial_id") or ""),
+            "source_key": str(item.get("source_key") or ""),
+            "status": str(item.get("status") or ""),
+            "trial_title": str(item.get("trial_title") or ""),
+            "condition": str(item.get("condition") or ""),
+            "phase": str(item.get("phase") or ""),
+            "intervention": str(item.get("intervention") or ""),
+            "criteria": rows,
+            "criteria_count": len(rows),
+            "created_at": int(item.get("created_at") or 0),
+            "updated_at": int(item.get("updated_at") or 0),
+            "reviewed_at": int(item.get("reviewed_at") or 0) or None,
+            "reviewed_by": str(item.get("reviewed_by") or "") or None,
+            "review_note": str(item.get("review_note") or "") or None,
+        }
+
     @staticmethod
     def _summary(item: dict[str, Any]) -> dict[str, Any]:
         rows = flatten_protocol_item(item)
@@ -216,9 +299,19 @@ class LocalTrialCatalog:
         return self._repository.trial_criteria(trial_id)
 
 
+class InvalidApproval(ValueError):
+    pass
+
+
+class ReviewAlreadyDecided(RuntimeError):
+    pass
+
+
 __all__ = [
     "DynamoDBCriteriaRepository",
     "LocalTrialCatalog",
     "flatten_protocol_item",
     "normalize_operator",
+    "InvalidApproval",
+    "ReviewAlreadyDecided",
 ]

@@ -114,3 +114,12 @@ export function RequireAuth({ children }: { children: ReactNode }) {
   }
   return <>{children}</>
 }
+
+/** 관리자 화면의 UX 가드. 실제 권한 검사는 백엔드의 Cognito 그룹 검증이 담당한다. */
+export function RequireAdmin({ children }: { children: ReactNode }) {
+  const { account, ready } = useAuth()
+  if (!ready) return null
+  if (!account) return <Navigate to="/login" replace />
+  if (!account.isAdmin) return <Navigate to="/home" replace />
+  return <>{children}</>
+}

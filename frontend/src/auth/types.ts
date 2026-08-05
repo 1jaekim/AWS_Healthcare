@@ -40,6 +40,8 @@ export interface Account {
    */
   personId: number
   createdAt: string
+  /** Cognito `admin` 그룹 소속 여부. 화면 노출용이며 최종 권한은 API가 검증한다. */
+  isAdmin: boolean
 }
 
 export interface SignupInput {

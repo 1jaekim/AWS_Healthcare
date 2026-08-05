@@ -94,7 +94,10 @@ function surveyFromAttributes(attributes: FetchUserAttributesOutput): Survey | n
   }
 }
 
-function accountFromAttributes(attributes: FetchUserAttributesOutput): Account {
+function accountFromAttributes(
+  attributes: FetchUserAttributesOutput,
+  isAdmin = false,
+): Account {
   const personId = Number(attributes['custom:person_id'])
   return {
     email: attributes.email ?? '',
@@ -113,6 +116,7 @@ function accountFromAttributes(attributes: FetchUserAttributesOutput): Account {
     survey: surveyFromAttributes(attributes),
     personId: Number.isFinite(personId) && personId > 0 ? personId : config.demoPersonId,
     createdAt: attributes['custom:agreed_at'] ?? '',
+    isAdmin,
   }
 }
 
@@ -128,7 +132,10 @@ export class CognitoAuthProvider implements AuthProvider {
     try {
       await getCurrentUser()
       const attributes = await fetchUserAttributes()
-      this.cached = accountFromAttributes(attributes)
+      const session = await fetchAuthSession()
+      const groups = session.tokens?.idToken?.payload['cognito:groups']
+      const isAdmin = Array.isArray(groups) && groups.includes('admin')
+      this.cached = accountFromAttributes(attributes, isAdmin)
       return this.cached
     } catch {
       // 로그인 상태가 아니면 예외가 난다. 오류가 아니라 정상 경로다.

@@ -114,6 +114,25 @@ export interface TrialDetail extends TrialSummary {
   criteria: TrialCriterion[]
 }
 
+export type TrialReviewStatus = 'pending_review' | 'approved' | 'rejected'
+
+export interface TrialReviewItem {
+  trial_id: string
+  source_key: string
+  status: TrialReviewStatus
+  trial_title: string
+  condition: string
+  phase: string
+  intervention: string
+  criteria: TrialCriterion[]
+  criteria_count: number
+  created_at: number
+  updated_at: number
+  reviewed_at: number | null
+  reviewed_by: string | null
+  review_note: string | null
+}
+
 export interface NarrativeEvidenceItem {
   note_id: string
   encounter_id: string
