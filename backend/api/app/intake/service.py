@@ -560,14 +560,13 @@ class IntakeService:
     def _response(self, record: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
         missing_fields = self._missing_fields(record, schema)
         status = record.get("status", "NEEDS_MORE_INFO")
-        titles = [item["title"] for item in missing_fields]
         prompt = None
-        if titles and status == "NEEDS_MORE_INFO":
-            prompt = (
-                "지원서에서 다음 내용이 확인되지 않았습니다: "
-                + ", ".join(titles)
-                + ". 해당 내용을 추가로 작성해 주세요."
-            )
+        if missing_fields and status == "NEEDS_MORE_INFO":
+            questions = [
+                f"{index}. {item['description'] or item['title']}"
+                for index, item in enumerate(missing_fields, start=1)
+            ]
+            prompt = "다음 질문에 아는 범위에서 답해 주세요.\n" + "\n".join(questions)
         return {
             "application_id": record["application_id"],
             "schema_id": record["schema_id"],

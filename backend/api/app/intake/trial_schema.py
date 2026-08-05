@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any, Sequence
 
 from ..domain.criteria import spec_for
@@ -105,6 +106,63 @@ _UNIT_LABELS = {
     "day": "일",
     "count": "회",
     "boolean": "",
+}
+
+_REFERENCE_ONLY = re.compile(
+    r"(?:4[.]2|4[.]3|선정기준|제외기준|inclusion criteria|exclusion criteria).*"
+    r"(?:참조|프로토콜 문서)",
+    re.IGNORECASE,
+)
+
+_REFERENCE_QUESTIONS: dict[str, tuple[dict[str, Any], ...]] = {
+    "INCLUSION": (
+        {
+            "name": "protocol_inclusion_health_history",
+            "type": "string",
+            "title": "현재 건강 상태와 최근 진료 이력",
+            "description": (
+                "현재 건강 상태와 최근 1년 안에 진단·치료·입원·수술을 받은 내용을 "
+                "적어주세요. 해당 사항이 없으면 ‘없음’이라고 답해 주세요."
+            ),
+        },
+        {
+            "name": "protocol_inclusion_test_findings",
+            "type": "string",
+            "title": "최근 검사에서 안내받은 이상 소견",
+            "description": (
+                "최근 건강검진, 혈액검사, 심전도 등에서 의료진에게 이상이 있다고 "
+                "안내받은 내용이 있나요? 검사받지 않았거나 이상이 없으면 그대로 적어주세요."
+            ),
+        },
+    ),
+    "EXCLUSION": (
+        {
+            "name": "protocol_exclusion_pregnancy_breastfeeding",
+            "type": "boolean",
+            "title": "임신 또는 수유 여부",
+            "description": (
+                "현재 임신 중이거나 수유 중인가요? 본인에게 해당하지 않으면 "
+                "‘아니요’라고 답해 주세요."
+            ),
+        },
+        {
+            "name": "protocol_exclusion_recent_donation",
+            "type": "string",
+            "title": "최근 헌혈 또는 다량 채혈 이력",
+            "description": (
+                "최근 3개월 안에 헌혈하거나 검사·시술로 많은 양의 피를 뽑은 적이 "
+                "있나요? 있다면 가장 최근 날짜를, 없으면 ‘없음’이라고 적어주세요."
+            ),
+        },
+        {
+            "name": "protocol_exclusion_planned_procedure",
+            "type": "boolean",
+            "title": "예정된 수술 또는 시술 여부",
+            "description": (
+                "임상시험 기간 중 예정된 수술·시술 또는 입원 계획이 있나요?"
+            ),
+        },
+    ),
 }
 
 
@@ -224,6 +282,19 @@ class TrialSchemaBuilder:
 
         for criterion in criteria:
             field_name = str(criterion.get("field") or "").strip()
+            label = str(criterion.get("label") or "").strip()
+            criterion_type = str(criterion.get("criterion_type") or "INCLUSION")
+            if _REFERENCE_ONLY.search(label):
+                # 공개 공고가 조항 번호만 가리킬 때 그 번호를 사용자에게 되묻지
+                # 않는다. 실제 조항을 추측해 판정 기준으로 만들지도 않는다.
+                # 대신 연구진 사전 확인에 필요한 이해 가능한 질문을 수집한다.
+                for question in _REFERENCE_QUESTIONS.get(criterion_type, ()):
+                    name = str(question["name"])
+                    if name in seen:
+                        continue
+                    seen.add(name)
+                    fields.append(dict(question))
+                continue
             if not field_name or field_name in seen:
                 continue
             # 기본 스키마가 이미 묻는 항목(만 나이 등)은 중복해서 묻지 않는다.
@@ -243,7 +314,7 @@ class TrialSchemaBuilder:
             )
             exclusion = criterion.get("criterion_type") == "EXCLUSION"
 
-            label = str(criterion.get("label") or "").strip() or spec.label
+            label = label or spec.label
             if kind is CriterionKind.DERIVED_BOOLEAN:
                 description = (
                     f"다음 제외 조건에 해당하나요? {label}"

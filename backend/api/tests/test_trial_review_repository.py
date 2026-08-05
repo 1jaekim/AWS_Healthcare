@@ -192,6 +192,42 @@ def test_unstructured_criteria_become_distinct_boolean_questions() -> None:
     assert "현재 임신 중" in request.additional_fields[1]["description"]
 
 
+def test_protocol_section_references_become_answerable_questions() -> None:
+    rows = flatten_protocol_item(
+        {
+            "inclusion_criteria": [
+                {
+                    "id": "INC-042",
+                    "description": "4.2. 선정기준(Inclusion Criteria) 참조 - 상세 기준은 프로토콜 문서에 명시",
+                    "structured": None,
+                }
+            ],
+            "exclusion_criteria": [
+                {
+                    "id": "EXC-043",
+                    "description": "4.3. 제외기준(Exclusion Criteria) 참조 - 상세 기준은 프로토콜 문서에 명시",
+                    "structured": None,
+                }
+            ],
+        }
+    )
+
+    request = TrialSchemaBuilder().build(
+        trial={"trial_id": "T", "trial_name": "테스트 공고"}, criteria=rows
+    )
+
+    assert len(request.additional_fields) == 5
+    rendered = " ".join(
+        f"{item['title']} {item['description']}" for item in request.additional_fields
+    )
+    assert "4.2" not in rendered
+    assert "4.3" not in rendered
+    assert "프로토콜 문서" not in rendered
+    assert "최근 진료" in rendered
+    assert "임신 또는 수유" in rendered
+    assert "최근 헌혈" in rendered
+
+
 def test_screenshot_duplicate_is_replaced_by_detailed_document() -> None:
     screenshot = _item()
     screenshot.update(
