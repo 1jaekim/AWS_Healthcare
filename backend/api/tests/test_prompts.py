@@ -41,7 +41,7 @@ from app.main import app
 # ---------------------------------------------------------------------------
 
 LOCKED: dict[str, tuple[str, str]] = {
-    "criterion_judge": ("1.0", "3552da1d3978"),
+    "criterion_judge": ("1.1", "d2c878918a12"),
     "evidence_planner": ("1.0", "e80b7eb3c1ac"),
     "explanation_admin": ("1.1", "6c6463c12609"),
     "explanation_patient": ("1.1", "09f63b6bda66"),

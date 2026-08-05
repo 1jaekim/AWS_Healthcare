@@ -476,7 +476,7 @@ class ScreeningOrchestrator:
         decisions: list[CriterionDecision] | None = None,
     ) -> list[CriterionResult]:
         """기준별로 규칙 계산 → 번들 → 검증 → 상태 확정을 수행한다."""
-        results: list[CriterionResult] = []
+        prepared: list[tuple[Any, Any]] = []
         for item in plan.plans:
             observation = observations.get(item.rule.field_name)
             outcome = self._gateway.invoke(
@@ -501,7 +501,28 @@ class ScreeningOrchestrator:
                 attributes["proposed_status"] = str(verification.proposed_status)
                 attributes["confidence"] = verification.confidence
 
-            decision = self._judge_criterion(context, bundle, verification, actor)
+            prepared.append((bundle, verification))
+
+        judgments: list[Any | None] = [None] * len(prepared)
+        if self._judge is not None:
+            if hasattr(self._judge, "judge_many"):
+                judgments = list(
+                    self._judge.judge_many(
+                        prepared,
+                        run_id=context.run_id,
+                        patient_key=context.patient_key,
+                        index_date=context.index_date,
+                    )
+                )
+            else:
+                judgments = [None] * len(prepared)
+
+        results: list[CriterionResult] = []
+        for index, (bundle, verification) in enumerate(prepared):
+            judgment = judgments[index] if index < len(judgments) else None
+            decision = self._judge_criterion(
+                context, bundle, verification, actor, judgment=judgment
+            )
             if decision is not None:
                 verification = decision.verification
                 if decisions is not None:
@@ -576,6 +597,7 @@ class ScreeningOrchestrator:
         bundle: Any,
         rule_verification: Any,
         actor: str,
+        judgment: Any | None = None,
     ) -> CriterionDecision | None:
         """LLM 판단 → Verifier → Rule Aggregator 단계를 실행한다.
 
@@ -593,13 +615,14 @@ class ScreeningOrchestrator:
             "AGENT",
             criterion_id=criterion_id,
         ) as attributes:
-            judgment = self._judge.judge(
-                bundle,
-                rule_verification=rule_verification,
-                run_id=context.run_id,
-                patient_key=context.patient_key,
-                index_date=context.index_date,
-            )
+            if judgment is None:
+                judgment = self._judge.judge(
+                    bundle,
+                    rule_verification=rule_verification,
+                    run_id=context.run_id,
+                    patient_key=context.patient_key,
+                    index_date=context.index_date,
+                )
             report = self._judgment_verifier.verify(
                 bundle,
                 judgment,

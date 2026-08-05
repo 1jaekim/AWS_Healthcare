@@ -256,6 +256,37 @@ def test_근거가_없으면_모델을_부르지_않는다() -> None:
     assert judgment.proposed_status == "UNKNOWN"
 
 
+def test_여러_기준은_모델_한번으로_일괄_판단한다() -> None:
+    second_rule = _rule(field_name="bmi")
+    object.__setattr__(second_rule, "criterion_id", "C02")
+    model = ScriptedModel(
+        [{
+            "judgments": [
+                {"criterion_id": "C01", "proposed_status": "OK", "confidence": 0.9},
+                {"criterion_id": "C02", "proposed_status": "NOT_OK", "confidence": 0.8},
+            ]
+        }]
+    )
+    judgments = _judge(model).judge_many(
+        [
+            (_bundle(), _rule_verification()),
+            (_bundle(rule=second_rule), _rule_verification()),
+        ],
+        run_id="RUN-BATCH",
+    )
+
+    assert len(model.requests) == 1
+    sent = json.loads(
+        model.requests[0]["messages"][0]["content"][0]["text"].split("\n\n", 1)[1]
+    )
+    assert sent["task"] == "evaluate_trial_criteria_batch"
+    assert [item["criterion"]["criterion_id"] for item in sent["items"]] == [
+        "C01", "C02"
+    ]
+    assert [item.proposed_status for item in judgments] == ["OK", "NOT_OK"]
+    assert sum(item.input_tokens for item in judgments) == 11
+
+
 # ---------------------------------------------------------------------------
 # LLM 판단: 폴백
 # ---------------------------------------------------------------------------

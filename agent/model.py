@@ -276,6 +276,7 @@ class StubModelClient:
         handler = {
             "nli": self._nli,
             "evaluate_trial_criterion": self._judge,
+            "evaluate_trial_criteria_batch": self._judge_batch,
             "explain": self._explain,
             "question": self._question,
             "plan": self._plan,
@@ -284,6 +285,14 @@ class StubModelClient:
         if handler is None:
             return ModelResponse(text="{}")
         return handler(payload)
+
+    def _judge_batch(self, payload: dict[str, Any]) -> ModelResponse:
+        judgments = []
+        for item in payload.get("items") or []:
+            single = self._judge(item).json_payload()
+            if single:
+                judgments.append(single)
+        return ModelResponse(text=json.dumps({"judgments": judgments}, ensure_ascii=False))
 
     # -- 개별 태스크 -------------------------------------------------------
 

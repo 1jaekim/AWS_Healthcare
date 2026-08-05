@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from agent.model import ModelResponse
+from agent.model import ModelResponse, ToolUse
 from app.auth import Principal
 from app.intake.service import (
     BASE_PROPERTIES,
@@ -31,6 +31,23 @@ class ScriptedIntakeModel:
     def converse(self, *, conversation, system, tools=None):
         return ModelResponse(
             text=json.dumps(self._payloads.pop(0), ensure_ascii=False)
+        )
+
+
+class ToolIntakeModel:
+    mode = "tool"
+
+    def converse(self, *, conversation, system, tools=None):
+        assert tools and tools[0]["toolSpec"]["name"] == "submit_intake_values"
+        return ModelResponse(
+            text="",
+            tool_uses=(
+                ToolUse(
+                    tool_use_id="tool-1",
+                    name="submit_intake_values",
+                    arguments={"values": {"age": 31, "sex": "female"}},
+                ),
+            ),
         )
 
 
@@ -96,12 +113,25 @@ def test_korean_short_answer_falls_back_to_deterministic_common_fields() -> None
     )
     result = service.start_application(
         schema_id=schema["schema_id"],
-        application_text="만 25세이고 임상해본적은 없습니다. BMI는 24입니다",
+        application_text="나는 만 22살이야. 과거 임상실험 참여 경험없음, BMI는 24입니다. 여자",
     )
 
-    assert result["data"]["age"] == 25
+    assert result["data"]["age"] == 22
     assert result["data"]["bmi"] == 24.0
     assert result["data"]["prior_trial_participation"] is False
+    assert result["data"]["sex"] == "female"
+
+
+def test_extract_prefers_bedrock_tool_arguments() -> None:
+    service = IntakeService(store=IntakeStore(), model=ToolIntakeModel())
+    schema = service.generate_schema(
+        trial_id="TRIAL-TOOL", notice_text="기본 정보", additional_fields=[]
+    )
+    result = service.start_application(
+        schema_id=schema["schema_id"], application_text="저는 31세 여성입니다"
+    )
+    assert result["data"]["age"] == 31
+    assert result["data"]["sex"] == "female"
 
 
 def test_completed_json_maps_scalar_fields_to_orchestrator_supplements() -> None:

@@ -83,7 +83,7 @@ JSON 객체 하나만 반환한다: {"fields":[{"name":"snake_case","type":"stri
 EXTRACTION_SYSTEM = """당신은 임상시험 지원서 정보 추출기다.
 제공된 스키마에 정의된 필드만 자연어에서 추출하라. 명시되지 않은 값은 추측하지 말고 null로 둔다.
 이전 값과 새 답변이 충돌하면 명확한 최신 답변만 사용한다. 적격 여부나 의학적 판단을 생성하지 마라.
-JSON 객체 하나만 반환한다: {"values":{"field_name":value_or_null}}"""
+반드시 submit_intake_values 도구를 호출해 확인된 값만 values에 제출하라."""
 
 
 class ApplicationSchemaNotFound(LookupError):
@@ -289,12 +289,47 @@ class IntakeService:
             )
         )
         try:
+            tool_properties = {
+                name: {
+                    key: value
+                    for key, value in spec.items()
+                    if key
+                    in {"type", "description", "enum", "items", "minimum", "maximum"}
+                }
+                for name, spec in json_schema.get("properties", {}).items()
+            }
+            extraction_tool = {
+                "toolSpec": {
+                    "name": "submit_intake_values",
+                    "description": "지원자의 자연어 답변에서 확인된 지원서 필드를 제출합니다.",
+                    "inputSchema": {
+                        "json": {
+                            "type": "object",
+                            "properties": {
+                                "values": {
+                                    "type": "object",
+                                    "properties": tool_properties,
+                                    "additionalProperties": False,
+                                }
+                            },
+                            "required": ["values"],
+                            "additionalProperties": False,
+                        }
+                    },
+                }
+            }
             response = self._model.converse(
-                conversation=conversation, system=EXTRACTION_SYSTEM
+                conversation=conversation,
+                system=EXTRACTION_SYSTEM,
+                tools=[extraction_tool],
             )
         except ModelError as exc:
             raise IntakeExtractionError(f"지원서 정보 추출에 실패했습니다: {exc}") from exc
         payload = response.json_payload() or {}
+        for use in response.tool_uses:
+            if use.name == "submit_intake_values":
+                payload = use.arguments
+                break
         raw_values = payload.get("values")
         if not isinstance(raw_values, dict):
             raw_values = payload.get("data")
@@ -325,7 +360,7 @@ class IntakeService:
         """한국어 짧은 답변에서 명확한 공통 필드를 결정론적으로 추출한다."""
         values: dict[str, Any] = {}
         properties = schema.get("properties", {})
-        age = re.search(r"(?:만\s*)?(\d{1,3})\s*세", text)
+        age = re.search(r"(?:만\s*)?(\d{1,3})\s*(?:세|살)", text)
         if age and "age" in properties:
             values["age"] = int(age.group(1))
         bmi = re.search(r"\bBMI\s*(?:는|가|=|:)?\s*(\d{1,2}(?:\.\d+)?)", text, re.I)
@@ -338,13 +373,13 @@ class IntakeService:
                 values["sex"] = "male"
         if "prior_trial_participation" in properties:
             if re.search(
-                r"(?:임상\s*시험|임상)(?:에|을|은|시험)?[^.\n]{0,15}"
+                r"(?:임상\s*(?:시험|실험)|임상)(?:에|을|은|시험|실험)?[^.\n]{0,15}"
                 r"(?:참여|해본|경험)[^.\n]{0,10}(?:없|아니)",
                 text,
             ):
                 values["prior_trial_participation"] = False
             elif re.search(
-                r"(?:임상\s*시험|임상)[^.\n]{0,15}(?:참여|해본|경험)[^.\n]{0,8}(?:있|했)",
+                r"(?:임상\s*(?:시험|실험)|임상)[^.\n]{0,15}(?:참여|해본|경험)[^.\n]{0,8}(?:있|했)",
                 text,
             ):
                 values["prior_trial_participation"] = True

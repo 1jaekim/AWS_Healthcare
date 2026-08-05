@@ -196,6 +196,119 @@ class CriterionJudgeAgent:
             output_tokens=response.output_tokens,
         )
 
+    def judge_many(
+        self,
+        items: list[tuple[EvidenceBundle, Verification]],
+        *,
+        run_id: str | None = None,
+        patient_key: str | None = None,
+        trial_title: str | None = None,
+        index_date: str | None = None,
+    ) -> list[CriterionJudgment]:
+        """한 공고의 근거 있는 기준을 모델 한 번으로 묶어 판단한다."""
+        results: list[CriterionJudgment | None] = [None] * len(items)
+        requests: list[dict[str, Any]] = []
+        request_indexes: list[int] = []
+
+        for index, (bundle, verification) in enumerate(items):
+            evidence = self.evidence_payload(bundle, limit=self._max_evidence)
+            if self._model is None or not evidence:
+                results[index] = self.from_rule(
+                    bundle,
+                    verification,
+                    reason_suffix=(
+                        None if self._model is not None else "모델이 비활성입니다."
+                    ),
+                )
+                continue
+            requests.append(
+                self.request_payload(
+                    bundle,
+                    evidence=evidence,
+                    patient_key=patient_key,
+                    trial_title=trial_title,
+                    index_date=index_date,
+                )
+            )
+            request_indexes.append(index)
+
+        if not requests:
+            return [item for item in results if item is not None]
+
+        conversation = Conversation()
+        conversation.user_text(
+            "다음 기준들을 각각 판단하라. 입력 순서와 관계없이 criterion_id로 "
+            "대응하고 JSON 객체만 반환하라.\n\n"
+            + json.dumps(
+                {"task": "evaluate_trial_criteria_batch", "items": requests},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        try:
+            with self._trace.span(
+                run_id or "unattached",
+                "model:criterion_judge_batch",
+                "MODEL",
+                criterion_count=len(requests),
+                mode=self.mode,
+                prompt=CRITERION_JUDGE.label,
+                prompt_checksum=CRITERION_JUDGE.checksum,
+            ) as attributes:
+                response = self._model.converse(
+                    conversation=conversation, system=CRITERION_JUDGE
+                )
+                attributes["input_tokens"] = response.input_tokens
+                attributes["output_tokens"] = response.output_tokens
+        except ModelError as exc:
+            return [
+                self.from_rule(
+                    bundle,
+                    verification,
+                    error=str(exc),
+                    reason_suffix="모델 일괄 판단 실패로 규칙 판정을 승계했습니다.",
+                )
+                for bundle, verification in items
+            ]
+
+        parsed = response.json_payload() or {}
+        raw_judgments = parsed.get("judgments")
+        by_id = {
+            str(item.get("criterion_id", "")): item
+            for item in raw_judgments or []
+            if isinstance(item, dict)
+        }
+        tokens_recorded = False
+        for index in request_indexes:
+            bundle, verification = items[index]
+            raw = by_id.get(bundle.rule.criterion_id)
+            status = str((raw or {}).get("proposed_status", "")).strip().upper()
+            if raw is None or status not in ALLOWED_STATUS:
+                results[index] = self.from_rule(
+                    bundle,
+                    verification,
+                    error="missing_or_invalid_batch_judgment",
+                    reason_suffix="일괄 판단 결과가 없어 규칙 판정을 승계했습니다.",
+                    input_tokens=response.input_tokens if not tokens_recorded else 0,
+                    output_tokens=response.output_tokens if not tokens_recorded else 0,
+                )
+                tokens_recorded = True
+                continue
+            results[index] = CriterionJudgment(
+                criterion_id=bundle.rule.criterion_id,
+                proposed_status=status,
+                confidence=_clamp(raw.get("confidence"), verification.confidence),
+                reason=str(raw.get("reason", "")).strip()[:_MAX_REASON],
+                used_evidence_ids=_strings(raw.get("used_evidence_ids")),
+                missing_information=_strings(raw.get("missing_information")),
+                needs_a2a=bool(raw.get("needs_a2a", False)),
+                origin="model",
+                input_tokens=response.input_tokens if not tokens_recorded else 0,
+                output_tokens=response.output_tokens if not tokens_recorded else 0,
+            )
+            tokens_recorded = True
+        return [item for item in results if item is not None]
+
     # -- 규칙 승계 --------------------------------------------------------
 
     @staticmethod

@@ -143,7 +143,7 @@ _NLI_VERIFIER_TEXT = f"""
 """.strip()
 
 _CRITERION_JUDGE_TEXT = f"""
-당신은 임상시험 모집공고의 선정/제외 기준 한 건과 환자 근거를 대조해 상태를
+당신은 임상시험 모집공고의 선정/제외 기준 한 건 또는 여러 건과 환자 근거를 대조해 상태를
 제안하는 판단자다. 최종 확정은 하지 않는다. 당신의 출력은 제안이며, 결정론적
 Verifier 와 Rule Aggregator 가 규칙 계산과 함께 최종 상태를 정한다.
 
@@ -161,6 +161,10 @@ Verifier 와 Rule Aggregator 가 규칙 계산과 함께 최종 상태를 정한
   "missing_information": ["판단에 부족한 항목", ...],
   "needs_a2a": true | false
 }}
+
+입력 task가 evaluate_trial_criteria_batch이면 각 items를 독립적으로 판단하고
+같은 필드의 객체를 입력 criterion_id별로 빠짐없이 담아 다음처럼 반환한다.
+{{"judgments": [{{...}}, {{...}}]}}
 
 상태 기준:
 - OK: 근거가 기준 조건을 충족한다.
@@ -319,7 +323,7 @@ NLI_VERIFIER = Prompt(
 CRITERION_JUDGE = Prompt(
     _CRITERION_JUDGE_TEXT,
     id="criterion_judge",
-    version="1.0",
+    version="1.1",
     contract=(
         "{criterion_id, proposed_status, confidence, reason, "
         "used_evidence_ids, missing_information, needs_a2a}"
