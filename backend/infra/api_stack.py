@@ -45,6 +45,7 @@ class ApiStack(Stack):
         scope: Construct,
         construct_id: str,
         criteria_table,
+        intake_table,
         pseudonym_secret,
         user_pool_id: str,
         user_pool_client_id: str,
@@ -90,6 +91,7 @@ class ApiStack(Stack):
             "BEDROCK_GUARDRAIL_VERSION": guardrail_version,
             # ─── 기타 ────────────────────────────────────
             "DYNAMODB_CRITERIA_TABLE": criteria_table.table_name,
+            "DYNAMODB_INTAKE_TABLE": intake_table.table_name,
             "CORS_ALLOW_ORIGINS": cors_origins,
             "LOG_LEVEL": "INFO",
         }
@@ -164,6 +166,7 @@ class ApiStack(Stack):
         # 상태와 감사 필드를 원자적으로 갱신한다. 권한 판정은 Cognito admin
         # 그룹을 검증하는 API 계층에서 수행한다.
         criteria_table.grant_read_write_data(self.function)
+        intake_table.grant_read_write_data(self.function)
         pseudonym_secret.grant_read(self.function)
 
         # ─── 공개 진입점 ─────────────────────────────────

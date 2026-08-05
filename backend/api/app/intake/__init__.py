@@ -8,7 +8,7 @@ from .service import (
     IntakeExtractionError,
     IntakeService,
 )
-from .store import IntakeStore
+from .store import DynamoDBIntakeStore, IntakeStore
 
 __all__ = [
     "ApplicationNotFound",
@@ -18,4 +18,5 @@ __all__ = [
     "FollowUpLimitReached",
     "IntakeService",
     "IntakeStore",
+    "DynamoDBIntakeStore",
 ]

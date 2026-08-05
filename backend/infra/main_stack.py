@@ -79,6 +79,21 @@ class MainStack(Stack):
             ),
         )
 
+        # 지원서 스키마와 작성 세션. API Lambda는 요청마다 다른 실행 환경을
+        # 사용할 수 있으므로 메모리에 두면 다음 요청에서 404가 난다.
+        self.intake_table = dynamodb.Table(
+            self,
+            "ApplicationStore",
+            table_name="ApplicationStore",
+            partition_key=dynamodb.Attribute(
+                name="record_id", type=dynamodb.AttributeType.STRING
+            ),
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            time_to_live_attribute="expires_at",
+            removal_policy=RemovalPolicy.RETAIN,
+            point_in_time_recovery=True,
+        )
+
         # ─── DLQ (공통) ──────────────────────────────────
         self.dlq = sqs.Queue(
             self,

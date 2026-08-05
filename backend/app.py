@@ -136,6 +136,7 @@ if os.path.isdir(os.path.join(os.path.dirname(__file__), "build", "api_lambda"))
         app,
         "HealthcareApiStack",
         criteria_table=main_stack.criteria_table,
+        intake_table=main_stack.intake_table,
         pseudonym_secret=main_stack.patient_pseudonym_secret,
         user_pool_id=auth_stack.user_pool.user_pool_id,
         user_pool_client_id=auth_stack.user_pool_client.user_pool_client_id,

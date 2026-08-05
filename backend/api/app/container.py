@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import os
 
 from .actions.cohort import CohortSelector
 from .actions.explanation import ExplanationAgent
@@ -27,7 +28,7 @@ from .config import (
 )
 from .criteria_repository import DynamoDBCriteriaRepository, LocalTrialCatalog
 from .domain.intake_vocabulary import CatalogFieldResolver
-from .intake import IntakeService, IntakeStore
+from .intake import DynamoDBIntakeStore, IntakeService, IntakeStore
 from .intake.model import StubApplicationModelClient
 from .orchestration.gateway import ToolGateway, default_policy
 from .orchestration.recommendation import RecommendationOrchestrator
@@ -71,7 +72,7 @@ class Container:
     cohort_selector: CohortSelector
     intake: IntakeAgent
     application_intake: IntakeService
-    intake_store: IntakeStore
+    intake_store: object
     agent: AgentStatus
     retrieval_mode: str
 
@@ -121,7 +122,15 @@ def build_container(
     guardrail = LocalGuardrail()
     audit = AuditTrail()
     run_store = RunStore()
-    intake_store = IntakeStore()
+    intake_table_name = os.getenv("DYNAMODB_INTAKE_TABLE", "").strip()
+    intake_store = (
+        DynamoDBIntakeStore(
+            table_name=intake_table_name,
+            region=criteria_config.region,
+        )
+        if intake_table_name
+        else IntakeStore()
+    )
 
     shared_model = model_client
     if shared_model is None:
