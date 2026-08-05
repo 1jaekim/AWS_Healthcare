@@ -1,5 +1,23 @@
 # Medi25 Crawler
 
+## Playwright 공개 공고 → AWS 저장
+
+한국임상시험참여포털 또는 Medi25의 로그인 제한 없는 공개 상세 페이지를 PNG로
+캡처하고, 이메일·전화번호를 DOM에서 마스킹한 뒤 S3에 업로드한다. 업로드된
+`trials/screenshots/*.png`는 EventBridge → `healthcare-trials-pipeline` →
+Textract → Bedrock → DynamoDB `CriteriaStore(pending_review)` 순서로 처리된다.
+
+```bash
+python -m pip install -r crawler/requirements-playwright.txt
+python -m playwright install chromium
+python crawler/playwright_capture.py \
+  --url "https://www.koreaclinicaltrials.org/clnctrial/clncView.do?ctSeq=281" \
+  --s3-bucket "<HealthcareDataBucketName>"
+```
+
+로그인 또는 접근 제한 화면은 S3에 업로드하지 않는다. `pending_review` 데이터는
+연구자가 원문과 구조화 결과를 검토하기 전에는 승인 데이터로 사용하지 않는다.
+
 Medi25 기반 임상시험 모집공고를 자동으로 수집하기 위한 Crawler 모듈입니다.
 
 사용자가 입력한 질환 키워드를 기반으로 Medi25를 검색하고, 모집 중인 임상시험 공고만 선별하여 표준화된 메타데이터(JSON) 형태로 반환합니다.
