@@ -338,6 +338,7 @@ class RecommendationLimits(BaseModel):
     top_k: int
     a2a_max_rounds: Literal[2]
     a2a_max_criteria_per_trial: int = Field(ge=1, le=5)
+    recommendation_max_workers: int = Field(ge=1, le=5)
 
 
 class RecommendationRunResponse(BaseModel):

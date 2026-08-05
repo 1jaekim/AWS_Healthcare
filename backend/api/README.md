@@ -289,6 +289,7 @@ POST /api/v1/intake/normalize
 | `AGENT_MAX_ITERATIONS` | `4` | tool-use 루프 상한 |
 | `CRITERION_JUDGE_ENABLED` | `true` | 기준별 판단 → Verifier → Rule Aggregator 경로 사용 |
 | `A2A_MAX_CRITERIA` | `5` | 2라운드 교차 검토 대상 기준 수 상한 |
+| `RECOMMENDATION_MAX_WORKERS` | `2` | 추천 시 동시에 판정할 공고 수(1~5, `1`은 순차 실행) |
 | `BEDROCK_GUARDRAIL_ID` | 없음 | Bedrock Guardrails 연결 |
 | `KNOWLEDGE_BASE_ID` | 없음 | 설정하면 `evidence_retrieval_tool`이 Bedrock GraphRAG Retrieve 사용 |
 | `PATIENT_PSEUDONYM_SECRET` | 없음 | 로컬 개발용 HMAC 키 |

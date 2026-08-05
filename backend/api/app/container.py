@@ -192,6 +192,7 @@ def build_container(
         run_store=run_store,
         audit=audit,
         a2a_max_criteria=config.max_deliberation_criteria,
+        max_workers=config.recommendation_max_workers,
     )
     # 지원서 모듈은 로컬에서도 계약을 검증할 수 있도록 결정론적 스텁을 사용한다.
     # 운영에서 Bedrock이 활성화되면 스크리닝과 같은 모델 클라이언트를 공유한다.
