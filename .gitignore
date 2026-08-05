@@ -8,6 +8,7 @@ __pycache__/
 
 # 가상환경
 .venv/
+.venv-infra/
 venv/
 env/
 
@@ -37,6 +38,8 @@ synthea-data/
 
 # 크롤 결과 샘플 (실제 수집 데이터라 레포에 남기지 않음)
 crawler/samples/
+crawler/output/
+crawler/input/
 
 # 작업용 참고 자료 (레포 관리 대상 아님)
 방법론_README.md
