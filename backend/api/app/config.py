@@ -192,6 +192,20 @@ class AuthSettings:
         return f"{self.issuer}/.well-known/jwks.json"
 
 
+@dataclass(frozen=True)
+class CriteriaStoreSettings:
+    """Protocol Parser가 저장한 승인 공고 기준 연결."""
+
+    table_name: str | None = field(
+        default_factory=lambda: os.getenv("DYNAMODB_CRITERIA_TABLE") or None
+    )
+    region: str = field(default_factory=resolve_region)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.table_name)
+
+
 DEFAULT_CORS_ORIGINS = (
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -225,6 +239,7 @@ class Settings:
     model: ModelSettings = field(default_factory=ModelSettings)
     graphrag: GraphRagSettings = field(default_factory=GraphRagSettings)
     auth: AuthSettings = field(default_factory=AuthSettings)
+    criteria_store: CriteriaStoreSettings = field(default_factory=CriteriaStoreSettings)
     cors_allow_origins: tuple[str, ...] = field(default_factory=_origins)
 
 

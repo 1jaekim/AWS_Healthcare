@@ -148,14 +148,15 @@ export class CognitoAuthProvider implements AuthProvider {
         userAttributes: {
           email,
           name: input.name.trim(),
-          birthdate: toIsoDate(input.birth),
-          gender: input.sex,
+          ...(input.birth.trim() ? { birthdate: toIsoDate(input.birth) } : {}),
+          ...(input.sex ? { gender: input.sex } : {}),
           // 형식이 맞지 않는 번호는 아예 보내지 않는다. Cognito 가 거부하면
           // 가입 전체가 실패한다.
           ...(phone ? { phone_number: phone } : {}),
           'custom:agreed_at': new Date().toISOString(),
           'custom:marketing_opt_in': String(input.agreements.mkt),
-          'custom:person_id': String(config.demoPersonId),
+          // 환자 번호는 본인이 선택할 수 있는 값이 아니다. 가입 후 관리자 또는
+          // 별도 서버 매핑 절차에서 검증된 번호만 넣는다.
         },
       },
     })

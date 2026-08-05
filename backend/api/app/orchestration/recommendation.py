@@ -19,6 +19,7 @@ class RecommendationOrchestrator:
         *,
         screening: ScreeningOrchestrator,
         repository: DatasetRepository,
+        trial_catalog: Any | None = None,
         run_store: RunStore,
         audit: AuditTrail,
         ranker: TrialRanker | None = None,
@@ -26,6 +27,7 @@ class RecommendationOrchestrator:
     ) -> None:
         self._screening = screening
         self._repository = repository
+        self._trial_catalog = trial_catalog
         self._runs = run_store
         self._audit = audit
         self._ranker = ranker or TrialRanker()
@@ -50,7 +52,11 @@ class RecommendationOrchestrator:
         ]
         recommended, excluded = self._ranker.rank(
             outputs,
-            trial_catalog=self._repository.trials,
+            trial_catalog=(
+                self._trial_catalog.trial_catalog(list(trial_ids))
+                if self._trial_catalog is not None
+                else self._repository.trials
+            ),
             top_k=top_k,
         )
         payload = {

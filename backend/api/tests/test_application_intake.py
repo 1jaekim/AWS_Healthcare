@@ -155,7 +155,7 @@ def test_completed_application_calls_orchestrator_with_json_supplements(
     container = SimpleNamespace(
         repository=SimpleNamespace(patients={7: {}}, trials={"TRIAL-1": {}}),
         application_intake=SimpleNamespace(
-            completed_application=lambda application_id: (application, schema)
+            completed_application=lambda application_id, **kwargs: (application, schema)
         ),
         orchestrator=orchestrator,
         audit=Audit(),

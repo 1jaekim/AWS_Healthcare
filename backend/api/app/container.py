@@ -19,7 +19,13 @@ from .actions.packet import EvidencePacketBuilder
 from agent.intake import IntakeAgent
 from agent.manager import AgentManager, AgentStatus
 from agent.model import BedrockModelClient, ModelClient, ModelError
-from .config import GraphRagSettings, ModelSettings, settings as default_settings
+from .config import (
+    CriteriaStoreSettings,
+    GraphRagSettings,
+    ModelSettings,
+    settings as default_settings,
+)
+from .criteria_repository import DynamoDBCriteriaRepository, LocalTrialCatalog
 from .domain.intake_vocabulary import CatalogFieldResolver
 from .intake import IntakeService, IntakeStore
 from .intake.model import StubApplicationModelClient
@@ -52,6 +58,7 @@ class Container:
     """실행에 필요한 모든 구성 요소."""
 
     repository: DatasetRepository
+    trial_catalog: object
     trace: TraceCollector
     guardrail: LocalGuardrail
     audit: AuditTrail
@@ -99,6 +106,8 @@ def build_container(
     graphrag_config: GraphRagSettings | None = None,
     retrieval_client: object | None = None,
     secrets_client: object | None = None,
+    criteria_store_config: CriteriaStoreSettings | None = None,
+    criteria_table: object | None = None,
 ) -> Container:
     """컨테이너를 구성한다.
 
@@ -106,6 +115,7 @@ def build_container(
     """
     config = model_config or default_settings.model
     rag_config = graphrag_config or default_settings.graphrag
+    criteria_config = criteria_store_config or default_settings.criteria_store
     repository = DatasetRepository(data_dir)
     trace = TraceCollector()
     guardrail = LocalGuardrail()
@@ -117,7 +127,19 @@ def build_container(
     if shared_model is None:
         shared_model, _ = _build_model_client(config)
 
-    criteria_tool = CriteriaTool(repository)
+    criteria_source = (
+        DynamoDBCriteriaRepository(
+            table_name=str(criteria_config.table_name),
+            region=criteria_config.region,
+            table=criteria_table,
+        )
+        if criteria_config.enabled
+        else repository
+    )
+    criteria_tool = CriteriaTool(repository, criteria_source=criteria_source)
+    trial_catalog = (
+        criteria_source if criteria_config.enabled else LocalTrialCatalog(repository)
+    )
     timeline_tool = TimelineGraphTool(repository)
     patient_key_resolver = None
     if rag_config.enabled:
@@ -189,6 +211,7 @@ def build_container(
     recommendation_orchestrator = RecommendationOrchestrator(
         screening=orchestrator,
         repository=repository,
+        trial_catalog=trial_catalog,
         run_store=run_store,
         audit=audit,
         a2a_max_criteria=config.max_deliberation_criteria,
@@ -202,6 +225,7 @@ def build_container(
 
     return Container(
         repository=repository,
+        trial_catalog=trial_catalog,
         trace=trace,
         guardrail=guardrail,
         audit=audit,

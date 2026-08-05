@@ -64,16 +64,24 @@ class CriteriaTool(BaseTool):
     name = "criteria_tool"
     permissions = (Permission(DataStore.CRITERIA_TABLE, Action.READ),)
 
-    def __init__(self, repository: DatasetRepository) -> None:
+    def __init__(
+        self, repository: DatasetRepository, *, criteria_source: Any | None = None
+    ) -> None:
         self._repository = repository
+        self._criteria_source = criteria_source or repository
         self._version_cache: dict[str, str] = {}
+
+    def _rows(self, trial_id: str) -> list[dict[str, str]]:
+        if hasattr(self._criteria_source, "rows_for"):
+            return self._criteria_source.rows_for(trial_id)
+        return self._criteria_source.criteria.get(trial_id, [])
 
     def version_for(self, trial_id: str) -> str:
         """시험의 현재 기준 버전을 반환한다."""
         cached = self._version_cache.get(trial_id)
         if cached is not None:
             return cached
-        rows = self._repository.criteria.get(trial_id, [])
+        rows = self._rows(trial_id)
         version = _criteria_version(rows)
         self._version_cache[trial_id] = version
         return version
@@ -83,8 +91,9 @@ class CriteriaTool(BaseTool):
         self.assert_allowed(Permission(DataStore.CRITERIA_TABLE, Action.READ))
 
         trial_id = kwargs.get("trial_id", context.trial_id)
-        rows = self._repository.criteria.get(trial_id, [])
-        version = self.version_for(trial_id)
+        rows = self._rows(trial_id)
+        version = _criteria_version(rows)
+        self._version_cache[trial_id] = version
 
         rules: list[CriterionRule] = []
         for row in rows:
