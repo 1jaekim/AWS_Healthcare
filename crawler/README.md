@@ -15,6 +15,23 @@ python crawler/playwright_capture.py \
   --s3-bucket "<HealthcareDataBucketName>"
 ```
 
+공개 목록에서 서로 다른 상세 공고를 여러 건 수집할 때는 배치 모드를 사용한다.
+사이트 부하와 차단 위험을 줄이기 위해 요청 간격은 최소 1초이며 한 번에 최대
+50건으로 제한된다. 기본 운영 단위는 10건이다.
+
+```bash
+python crawler/playwright_capture.py \
+  --list-url "https://trialforme.konect.or.kr/clnctest/list.do" \
+  --limit 10 \
+  --delay-seconds 1.5 \
+  --s3-bucket "<HealthcareDataBucketName>"
+```
+
+목록의 `javascript:goView(...)` 상세 이동은 공개 `view.do` URL로만 변환한다.
+사이트 JavaScript를 임의 실행하거나 로그인·CAPTCHA를 우회하지 않는다. 로컬
+PNG/JSON은 수집 시각을 포함하지만 S3 키는 원본 URL 해시로 고정해 정기 실행 시
+같은 공고가 timestamp만 다른 중복 데이터로 계속 쌓이지 않게 한다.
+
 로그인 또는 접근 제한 화면은 S3에 업로드하지 않는다. `pending_review` 데이터는
 연구자가 원문과 구조화 결과를 검토하기 전에는 승인 데이터로 사용하지 않는다.
 

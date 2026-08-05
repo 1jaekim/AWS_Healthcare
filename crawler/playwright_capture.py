@@ -9,9 +9,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
+import time
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -20,6 +22,8 @@ DEFAULT_URL = (
     "https://www.medi25.com/html/odition_1/"
     "odition_detail_read_step1_m.php?seq=12204"
 )
+DEFAULT_LIST_URL = "https://trialforme.konect.or.kr/clnctest/list.do"
+DETAIL_PATH_MARKERS = ("/clnctest/view.do", "/clnctrial/clncView.do")
 ALLOWED_HOSTS = {
     "medi25.com",
     "www.medi25.com",
@@ -48,7 +52,11 @@ def capture(
     output_dir.mkdir(parents=True, exist_ok=True)
     captured_at = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     page_id = hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
-    source = "KoreaClinicalTrials" if "koreaclinicaltrials.org" in url else "Medi25"
+    source = (
+        "KoreaClinicalTrials"
+        if any(host in url for host in ("koreaclinicaltrials.org", "trialforme.konect.or.kr"))
+        else "Medi25"
+    )
     prefix = "kct" if source == "KoreaClinicalTrials" else "medi25"
     screenshot_path = output_dir / f"{prefix}_{page_id}_{captured_at}.png"
     metadata_path = output_dir / f"{prefix}_{page_id}_{captured_at}.json"
@@ -122,7 +130,11 @@ def capture(
             raise ValueError("로그인/접근 제한 화면은 공고 파이프라인에 업로드하지 않습니다.")
         import boto3
 
-        s3_key = f"{s3_prefix.rstrip('/')}/{screenshot_path.name}"
+        # 로컬 파일에는 수집 시각을 남기되 S3 키는 URL 해시로 고정한다. 같은
+        # 공고를 정기 수집할 때 timestamp 키를 계속 만들면 CriteriaStore에도
+        # 중복 버전이 끝없이 쌓인다. 고정 키를 덮어쓰면 원문 최신화는 유지하면서
+        # 공고별 파이프라인 입력 키는 안정적으로 재사용할 수 있다.
+        s3_key = f"{s3_prefix.rstrip('/')}/{prefix}_{page_id}.png"
         boto3.client("s3").upload_file(
             str(screenshot_path),
             s3_bucket,
@@ -134,6 +146,7 @@ def capture(
                     "source-url-sha256": page_id,
                     "screenshot-sha256": metadata["screenshot_sha256"],
                     "source": prefix,
+                    "captured-at": captured_at,
                 },
             },
         )
@@ -142,6 +155,104 @@ def capture(
         json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     return {**metadata, "metadata": str(metadata_path)}
+
+
+def discover_detail_urls(
+    list_url: str,
+    *,
+    limit: int,
+    timeout_ms: int = 30_000,
+) -> list[str]:
+    """공개 목록에서 서로 다른 임상시험 상세 URL을 발견한다.
+
+    검색 결과의 현재 페이지만 읽고, 로그인·CAPTCHA·페이지 제한을 우회하지 않는다.
+    URL fragment는 제거하고 DOM 순서를 유지한 채 중복을 제거한다.
+    """
+
+    list_url = _validated_url(list_url)
+    if limit < 1 or limit > 50:
+        raise ValueError("한 번에 수집할 공고 수는 1~50이어야 합니다.")
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_page(
+            viewport={"width": 1440, "height": 1000},
+            locale="ko-KR",
+        )
+        page.goto(list_url, wait_until="domcontentloaded", timeout=timeout_ms)
+        try:
+            page.wait_for_load_state("networkidle", timeout=10_000)
+        except PlaywrightTimeoutError:
+            pass
+        hrefs = page.locator("a[href]").evaluate_all(
+            "elements => elements.map(element => element.getAttribute('href') || '')"
+        )
+        browser.close()
+
+    discovered: list[str] = []
+    seen: set[str] = set()
+    for href in hrefs:
+        # 현재 KCT 목록은 일반 링크 대신 javascript:goView('202600593')를 쓴다.
+        # 사이트 함수를 실행하지 않고 공개 상세 URL로만 안전하게 변환한다.
+        match = re.fullmatch(r"javascript:goView\(['\"]([0-9]+)['\"]\);?", href.strip())
+        if match:
+            absolute = urljoin(
+                list_url,
+                f"/clnctest/view.do?clncTestSn={match.group(1)}",
+            )
+        else:
+            absolute = urljoin(list_url, href).split("#", 1)[0]
+        if not any(marker in urlparse(absolute).path for marker in DETAIL_PATH_MARKERS):
+            continue
+        try:
+            absolute = _validated_url(absolute)
+        except ValueError:
+            continue
+        if absolute in seen:
+            continue
+        seen.add(absolute)
+        discovered.append(absolute)
+        if len(discovered) >= limit:
+            break
+    return discovered
+
+
+def capture_batch(
+    list_url: str,
+    output_dir: Path,
+    *,
+    limit: int,
+    delay_seconds: float,
+    s3_bucket: str | None = None,
+    s3_prefix: str = "trials/screenshots/",
+) -> dict:
+    """목록에서 발견한 공개 공고를 저속으로 캡처하고 선택적으로 S3에 올린다."""
+
+    if delay_seconds < 1:
+        raise ValueError("공개 사이트 부하를 줄이기 위해 요청 간격은 최소 1초입니다.")
+    urls = discover_detail_urls(list_url, limit=limit)
+    captured: list[dict] = []
+    failed: list[dict[str, str]] = []
+    for index, url in enumerate(urls):
+        try:
+            captured.append(
+                capture(
+                    url,
+                    output_dir,
+                    s3_bucket=s3_bucket,
+                    s3_prefix=s3_prefix,
+                )
+            )
+        except Exception as exc:  # 한 공고 실패가 전체 배치를 중단하지 않게 한다.
+            failed.append({"url": url, "error": str(exc)})
+        if index + 1 < len(urls):
+            time.sleep(delay_seconds)
+    return {
+        "list_url": list_url,
+        "discovered": len(urls),
+        "captured": captured,
+        "failed": failed,
+    }
 
 
 def main() -> None:
@@ -154,13 +265,36 @@ def main() -> None:
     )
     parser.add_argument("--s3-bucket", help="설정하면 캡처를 trials/ 아래에 업로드")
     parser.add_argument("--s3-prefix", default="trials/screenshots/")
+    parser.add_argument(
+        "--list-url",
+        help="지정하면 공개 목록에서 서로 다른 상세 URL을 찾아 배치 캡처",
+    )
+    parser.add_argument("--limit", type=int, default=10, help="배치 최대 공고 수 (1~50)")
+    parser.add_argument(
+        "--delay-seconds",
+        type=float,
+        default=1.5,
+        help="공고별 요청 간격, 최소 1초",
+    )
     args = parser.parse_args()
-    print(json.dumps(capture(
-        args.url,
-        args.output_dir,
-        s3_bucket=args.s3_bucket,
-        s3_prefix=args.s3_prefix,
-    ), ensure_ascii=False, indent=2))
+    result = (
+        capture_batch(
+            args.list_url or DEFAULT_LIST_URL,
+            args.output_dir,
+            limit=args.limit,
+            delay_seconds=args.delay_seconds,
+            s3_bucket=args.s3_bucket,
+            s3_prefix=args.s3_prefix,
+        )
+        if args.list_url
+        else capture(
+            args.url,
+            args.output_dir,
+            s3_bucket=args.s3_bucket,
+            s3_prefix=args.s3_prefix,
+        )
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":
