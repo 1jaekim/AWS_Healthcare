@@ -13,6 +13,7 @@ from app.domain.models import CriterionResult
 from app.domain.states import CriterionKind, CriterionStatus
 from app.main import app
 from app.orchestration.recommendation import RecommendationOrchestrator
+from app.schemas import RecommendationRunResponse
 
 
 def _criterion(
@@ -272,3 +273,44 @@ def test_recommendation_runs_trials_concurrently_and_preserves_order() -> None:
         "T-3",
     ]
     assert result["limits"]["recommendation_max_workers"] == 2
+
+
+def test_recommendation_allows_empty_candidate_catalog() -> None:
+    class ScreeningStub:
+        def run(self, **kwargs):
+            raise AssertionError("빈 후보 목록에서는 screening을 실행하면 안 됩니다")
+
+    class RankerStub:
+        def rank(self, outputs, *, trial_catalog, top_k):
+            assert outputs == []
+            return ([], [])
+
+    class RunStoreStub:
+        def new_recommendation_id(self):
+            return "REC-empty"
+
+        def save_recommendation(self, recommendation_id, payload):
+            self.payload = payload
+
+    class AuditStub:
+        def record(self, *args, **kwargs):
+            return None
+
+    orchestrator = RecommendationOrchestrator(
+        screening=ScreeningStub(),
+        repository=SimpleNamespace(trials={}),
+        run_store=RunStoreStub(),
+        audit=AuditStub(),
+        ranker=RankerStub(),
+    )
+
+    result = orchestrator.run(
+        person_id=1,
+        trial_ids=[],
+        top_k=3,
+        actor="test",
+    )
+
+    response = RecommendationRunResponse.model_validate(result)
+    assert response.evaluated_trials == 0
+    assert response.limits.recommendation_max_workers == 0

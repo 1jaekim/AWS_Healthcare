@@ -338,7 +338,10 @@ class RecommendationLimits(BaseModel):
     top_k: int
     a2a_max_rounds: Literal[2]
     a2a_max_criteria_per_trial: int = Field(ge=1, le=5)
-    recommendation_max_workers: int = Field(ge=1, le=5)
+    # 승인된 후보 공고가 하나도 없으면 실행한 worker 수도 0이다. 이 값은
+    # 설정값이 아니라 이번 추천 실행에서 실제 사용한 worker 수이므로 0을
+    # 정상적인 빈 결과로 허용한다.
+    recommendation_max_workers: int = Field(ge=0, le=5)
 
 
 class RecommendationRunResponse(BaseModel):
