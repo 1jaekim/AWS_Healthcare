@@ -1,5 +1,5 @@
 {
-  "Comment": "환자정보 전처리 - 비식별화 후 Bedrock Knowledge Bases GraphRAG 동기화",
+  "Comment": "환자정보 전처리 - 비식별화 후 Bedrock Knowledge Bases GraphRAG 동기화. GraphRAG 는 us-west-2 에 있어 bedrockagent 호출만 리소스 ARN 에 리전을 박아 교차 리전으로 나간다.",
   "StartAt": "Sanitizer",
   "States": {
     "Sanitizer": {
@@ -41,7 +41,7 @@
     },
     "StartGraphRagIngestion": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:bedrockagent:startIngestionJob",
+      "Resource": "arn:aws:states:${GraphRagRegion}::aws-sdk:bedrockagent:startIngestionJob",
       "Parameters": {
         "KnowledgeBaseId": "${KnowledgeBaseId}",
         "DataSourceId": "${DataSourceId}",
@@ -75,7 +75,7 @@
     },
     "CheckGraphRagIngestion": {
       "Type": "Task",
-      "Resource": "arn:aws:states:::aws-sdk:bedrockagent:getIngestionJob",
+      "Resource": "arn:aws:states:${GraphRagRegion}::aws-sdk:bedrockagent:getIngestionJob",
       "Parameters": {
         "KnowledgeBaseId": "${KnowledgeBaseId}",
         "DataSourceId": "${DataSourceId}",

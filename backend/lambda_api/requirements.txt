@@ -1,0 +1,10 @@
+# Lambda 실행에 필요한 것만 담는다. backend/api/requirements.txt 에서 uvicorn 과
+# pytest·httpx 를 뺀 목록이다. Lambda 에는 ASGI 서버가 필요 없고(Mangum 이 그
+# 역할을 한다) 테스트 도구는 런타임 용량만 차지한다.
+#
+# boto3 는 Lambda 런타임에 이미 있지만 버전이 뒤처질 수 있어 명시적으로 넣는다.
+# Bedrock 신규 API(Converse, ApplyGuardrail)는 최신 botocore 를 요구한다.
+fastapi>=0.115,<1
+mangum>=0.19,<1
+boto3>=1.35,<2
+PyJWT[crypto]>=2.9,<3

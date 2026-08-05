@@ -57,7 +57,7 @@
       "Parameters": {
         "TopicArn": "${AlertTopicArn}",
         "Subject.$": "States.Format('[Healthcare] 기준 검토 필요: {}', $.parser_result.trial_id)",
-        "Message.$": "States.Format('임상시험 공고 구조화 완료.\\n\\nTrial ID: {}\\n제목: {}\\n선정기준: {}건\\n제외기준: {}건\\n\\n검토 후 승인해주세요.', $.parser_result.trial_id, $.parser_result.trial_title, $.parser_result.inclusion_count, $.parser_result.exclusion_count)"
+        "Message.$": "States.Format('임상시험 공고 구조화 완료.\n\nTrial ID: {}\n제목: {}\n선정기준: {}건\n제외기준: {}건\n\n검토 후 승인해주세요.', $.parser_result.trial_id, $.parser_result.trial_title, $.parser_result.inclusion_count, $.parser_result.exclusion_count)"
       },
       "ResultPath": "$.notification",
       "Next": "TrialsPipelineSuccess"
@@ -73,7 +73,7 @@
       "Parameters": {
         "TopicArn": "${AlertTopicArn}",
         "Subject": "[Healthcare Pipeline] 공고 구조화 실패",
-        "Message.$": "States.Format('Protocol Parser 실패.\\nSource: {}\\nError: {}', $.detail.object.key, $.error.Cause)"
+        "Message.$": "States.Format('Protocol Parser 실패.\nSource: {}\nError: {}', $.detail.object.key, $.error.Cause)"
       },
       "Next": "TrialsPipelineFailed"
     },

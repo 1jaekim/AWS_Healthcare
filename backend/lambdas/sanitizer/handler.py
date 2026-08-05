@@ -34,6 +34,30 @@ RAW_PREFIX = os.environ.get("S3_PREFIX_RAW", "raw/")
 RAG_PREFIX = os.environ.get("S3_PREFIX_RAG", "rag/")
 PSEUDONYM_SECRET_ARN = os.environ.get("PATIENT_PSEUDONYM_SECRET_ARN", "")
 
+# ─── GraphRAG 출력 대상 ──────────────────────────────────
+# Bedrock Knowledge Bases 가 서울에서 Neptune Analytics 스토리지를 아직 받지
+# 않아 GraphRAG 계층만 us-west-2 에 있다(infra/graphrag_stack.py). 그래서 비식별
+# 문서의 목적지는 원본 버킷과 다르다.
+#
+# 여기서 리전을 넘는 것은 비식별화를 끝낸 문서뿐이다. 원본과 직접 식별자는
+# 아래 build_patient_documents 이전 단계에서 떨어져 나가고 서울 raw/ 에만 남는다.
+# 이 순서가 바뀌면 리전 분리가 곧 개인정보 국외 이전이 된다.
+RAG_BUCKET_NAME = os.environ.get("S3_RAG_BUCKET_NAME") or BUCKET_NAME
+RAG_REGION = os.environ.get("S3_RAG_REGION", "")
+
+
+@lru_cache(maxsize=1)
+def get_rag_s3_client():
+    """비식별 문서를 쓸 S3 클라이언트.
+
+    같은 버킷이면 기본 클라이언트를 그대로 쓴다. 리전이 갈린 경우에만 별도
+    클라이언트를 만든다 — 교차 리전 PUT 은 리전을 명시하지 않으면 리다이렉트
+    오류(PermanentRedirect)로 떨어진다.
+    """
+    if RAG_BUCKET_NAME == BUCKET_NAME or not RAG_REGION:
+        return s3_client
+    return boto3.client("s3", region_name=RAG_REGION)
+
 
 @lru_cache(maxsize=1)
 def get_pseudonymization_secret() -> str:
@@ -108,29 +132,31 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     canonical_count = sum(document.note_count for document in documents)
     output_prefix = f"{RAG_PREFIX}patients/"
 
+    rag_s3 = get_rag_s3_client()
     try:
         for document in documents:
             document_key = f"{output_prefix}{document.patient_key}.md"
             metadata_key = f"{document_key}.metadata.json"
-            s3_client.put_object(
-                Bucket=BUCKET_NAME,
+            rag_s3.put_object(
+                Bucket=RAG_BUCKET_NAME,
                 Key=document_key,
                 Body=document.body.encode("utf-8"),
                 ContentType="text/markdown; charset=utf-8",
                 ServerSideEncryption="aws:kms",
             )
-            s3_client.put_object(
-                Bucket=BUCKET_NAME,
+            rag_s3.put_object(
+                Bucket=RAG_BUCKET_NAME,
                 Key=metadata_key,
                 Body=json.dumps(document.metadata, ensure_ascii=False).encode("utf-8"),
                 ContentType="application/json",
                 ServerSideEncryption="aws:kms",
             )
         logger.info(
-            "GraphRAG 문서 저장 완료: s3://%s/%s (%s명)",
-            BUCKET_NAME,
+            "GraphRAG 문서 저장 완료: s3://%s/%s (%s명, 리전 %s)",
+            RAG_BUCKET_NAME,
             output_prefix,
             len(documents),
+            RAG_REGION or "동일",
         )
     except Exception as e:
         logger.error(f"S3 저장 실패: {e}")
@@ -144,7 +170,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "patient_documents": len(documents),
         "errors": error_count,
         "output_key": output_prefix,
-        "bucket": BUCKET_NAME,
+        "bucket": RAG_BUCKET_NAME,
     }
 
     logger.info(f"결과: {json.dumps(result)}")

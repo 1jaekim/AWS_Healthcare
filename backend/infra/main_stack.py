@@ -33,10 +33,23 @@ class MainStack(Stack):
         scope: Construct,
         construct_id: str,
         s3_stack,
-        bedrock_stack,
         observability_stack,
+        graphrag_region: str,
+        knowledge_base_id: str = "",
+        data_source_id: str = "",
+        graphrag_bucket: str = "",
         **kwargs,
     ) -> None:
+        """GraphRAG 값들은 스택 참조가 아니라 문자열로 받는다.
+
+        GraphRAG 는 us-west-2 에 있고 이 스택은 서울에 있다. CloudFormation 의
+        Export/ImportValue 는 같은 리전 안에서만 동작하므로 스택 객체를 넘겨
+        `get_att` 를 쓰던 방식은 리전이 갈린 순간 성립하지 않는다.
+
+        대신 GraphRAG 스택을 먼저 배포하고 그 출력값을 CDK 컨텍스트로 넘긴다.
+        빈 문자열이면 GraphRAG 없이 배포된다 — Lambda 는 KB 를 못 찾고 API 는
+        로컬 키워드 검색으로 내려앉지만, 파이프라인 자체는 뜬다.
+        """
         super().__init__(scope, construct_id, **kwargs)
 
         # ─── DynamoDB Criteria Store ─────────────────────
@@ -93,7 +106,12 @@ class MainStack(Stack):
             "S3_PREFIX_TRIALS": "trials/",
             "DYNAMODB_CRITERIA_TABLE": self.criteria_table.table_name,
             "BEDROCK_MODEL_ID": "anthropic.claude-3-sonnet-20240229-v1:0",
-            "KNOWLEDGE_BASE_ID": bedrock_stack.get_knowledge_base_id(),
+            "KNOWLEDGE_BASE_ID": knowledge_base_id,
+            # 비식별 문서만 GraphRAG 리전으로 건너간다. 비워두면 서울 버킷에
+            # 그대로 쓰므로 KB 가 읽지 못한다 — 리전이 갈린 뒤로는 이 두 값이
+            # 파이프라인과 KB 를 잇는 유일한 끈이다.
+            "S3_RAG_BUCKET_NAME": graphrag_bucket,
+            "S3_RAG_REGION": graphrag_region,
             "LOG_LEVEL": "INFO",
             "SNS_ALERT_TOPIC_ARN": observability_stack.alert_topic.topic_arn,
             "PATIENT_PSEUDONYM_SECRET_ARN": self.patient_pseudonym_secret.secret_arn,
@@ -114,6 +132,27 @@ class MainStack(Stack):
         )
         s3_stack.grant_sanitizer_access(self.sanitizer_fn)
         self.patient_pseudonym_secret.grant_read(self.sanitizer_fn)
+
+        # GraphRAG 버킷은 다른 리전에 있어서 CDK 의 grant_write 로 못 잇는다
+        # (버킷 객체가 이 앱의 이 리전 스택에 없다). 이름으로 ARN 을 짜서 직접
+        # 붙인다. 대상이 `rag/patients/` 하나뿐이라 와일드카드가 넓지 않다.
+        if graphrag_bucket:
+            self.sanitizer_fn.add_to_role_policy(
+                iam.PolicyStatement(
+                    actions=["s3:PutObject"],
+                    resources=[f"arn:aws:s3:::{graphrag_bucket}/rag/patients/*"],
+                )
+            )
+            # 교차 리전 KMS. 키 ARN 을 여기서 알 수 없어 리전으로만 좁힌다.
+            # 이 계정의 us-west-2 키에 한정되고, S3 가 대신 호출하는 경로다.
+            self.sanitizer_fn.add_to_role_policy(
+                iam.PolicyStatement(
+                    actions=["kms:Encrypt", "kms:GenerateDataKey", "kms:Decrypt"],
+                    resources=[
+                        f"arn:aws:kms:{graphrag_region}:{Stack.of(self).account}:key/*"
+                    ],
+                )
+            )
 
         # ─── Protocol Parser Lambda ─────────────────────
         self.protocol_parser_fn = _lambda.Function(
@@ -146,9 +185,11 @@ class MainStack(Stack):
             )
         )
 
+        # KB 는 us-west-2 에 있다. 이 스택의 리전을 쓰면 존재하지 않는 ARN 이
+        # 만들어지고, Step Functions 의 색인 시작이 권한 오류로 죽는다.
         knowledge_base_arn = (
-            f"arn:aws:bedrock:{Stack.of(self).region}:{Stack.of(self).account}:"
-            f"knowledge-base/{bedrock_stack.get_knowledge_base_id()}"
+            f"arn:aws:bedrock:{graphrag_region}:{Stack.of(self).account}:"
+            f"knowledge-base/{knowledge_base_id or '*'}"
         )
 
         # ─── Step Functions: EMR Pipeline ────────────────
@@ -158,9 +199,11 @@ class MainStack(Stack):
         emr_definition = emr_definition.replace(
             "${SanitizerFunctionArn}", self.sanitizer_fn.function_arn
         ).replace(
-            "${KnowledgeBaseId}", bedrock_stack.get_knowledge_base_id()
+            "${KnowledgeBaseId}", knowledge_base_id
         ).replace(
-            "${DataSourceId}", bedrock_stack.get_data_source_id()
+            "${DataSourceId}", data_source_id
+        ).replace(
+            "${GraphRagRegion}", graphrag_region
         ).replace(
             "${AlertTopicArn}", observability_stack.alert_topic.topic_arn
         )

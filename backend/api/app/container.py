@@ -127,9 +127,12 @@ def build_container(
             region=rag_config.region,
             secrets_client=secrets_client,
         )
+        # KB 만 리전이 다를 수 있다. 위의 Secrets Manager 는 이 서비스와 같은
+        # 리전(rag_config.region)을 보고, KB 는 자기 리전을 본다. 한 값으로
+        # 묶으면 둘 중 하나가 반드시 틀린 리전을 보게 된다.
         retrieval_tool = BedrockKnowledgeBaseEvidenceRetrievalTool(
             knowledge_base_id=str(rag_config.knowledge_base_id),
-            region=rag_config.region,
+            region=rag_config.knowledge_base_region,
             client=retrieval_client,
         )
     else:

@@ -100,6 +100,25 @@ class GraphRagSettings:
         default_factory=lambda: os.getenv("KNOWLEDGE_BASE_ID") or None
     )
     region: str = field(default_factory=resolve_region)
+    """Secrets Manager 등 이 서비스와 같은 리전에 있는 것들을 부를 때 쓴다."""
+
+    knowledge_base_region: str = field(
+        default_factory=lambda: os.getenv("KNOWLEDGE_BASE_REGION")
+        or resolve_region()
+    )
+    """KB 만 다른 리전에 있을 때 쓰는 값.
+
+    나머지 인프라는 서울에 있지만 GraphRAG 는 us-west-2 에 있다. Bedrock
+    Knowledge Bases 가 서울에서 Neptune Analytics 스토리지를 아직 받지 않기
+    때문이다(`backend/infra/graphrag_stack.py`).
+
+    비워두면 `region` 과 같아진다. 리전이 갈린 배포에서 이 값을 빠뜨리면 API 가
+    서울에서 KB 를 찾다가 ResourceNotFound 로 떨어진다. 조용히 로컬 검색으로
+    내려앉지 않고 실패하는 편이 낫다 — 근거 없이 판정이 나가는 것보다 낫다.
+
+    서울에서 KB 가 열리면 이 값을 지우면 된다.
+    """
+
     patient_pseudonym_secret: str | None = field(
         default_factory=lambda: os.getenv("PATIENT_PSEUDONYM_SECRET") or None
     )
