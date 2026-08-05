@@ -41,6 +41,8 @@ export interface MatchingState {
   loadTrials: () => Promise<TrialSummary[]>
   run: (personId: number, topK?: number) => Promise<RecommendationRun | null>
   loadRunDetail: (runId: string) => Promise<ScreeningRun | null>
+  /** 공고 승인 등 후보 집합이 바뀌었을 때 이전 추천 스냅샷을 폐기한다. */
+  invalidate: () => void
 }
 
 const MatchingContext = createContext<MatchingState | null>(null)
@@ -125,6 +127,12 @@ export function MatchingProvider({ children }: { children: ReactNode }) {
     [runs],
   )
 
+  const invalidate = useCallback(() => {
+    setRecommendation(null)
+    setRuns({})
+    setRanAt(null)
+  }, [])
+
   const value = useMemo<MatchingState>(
     () => ({
       trials,
@@ -136,8 +144,20 @@ export function MatchingProvider({ children }: { children: ReactNode }) {
       loadTrials,
       run,
       loadRunDetail,
+      invalidate,
     }),
-    [trials, recommendation, runs, busy, error, ranAt, loadTrials, run, loadRunDetail],
+    [
+      trials,
+      recommendation,
+      runs,
+      busy,
+      error,
+      ranAt,
+      loadTrials,
+      run,
+      loadRunDetail,
+      invalidate,
+    ],
   )
 
   return <MatchingContext.Provider value={value}>{children}</MatchingContext.Provider>

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
 import { TRIAL_META } from '../api/mock'
-import type { RecommendedTrial } from '../api/types'
+import type { RecommendedTrial, TrialSummary } from '../api/types'
 import AppHeader from '../components/AppHeader'
 import { Chips, ErrorNote, Loading } from '../components/ui'
 import { useAuth } from '../auth/AuthContext'
@@ -47,13 +47,19 @@ export default function Home() {
   }, [trials])
 
   const everything = allTrials(recommendation)
+  const verdictByTrial = useMemo(
+    () => new Map(everything.map((trial) => [trial.trial_id, trial])),
+    [everything],
+  )
   const fields = useMemo(
-    () => [ALL, ...Array.from(new Set(everything.map((t) => purposeOf(t.trial_id))))],
-    [everything, purposeOf],
+    () => [ALL, ...Array.from(new Set(trials.map((t) => purposeOf(t.trial_id))))],
+    [trials, purposeOf],
   )
 
   const top = recommendation?.recommended_trials ?? []
-  const shown = everything.filter(
+  // "전체 모집공고"는 추천 실행 결과가 아니라 승인 공고 원장을 기준으로 한다.
+  // 승인 직후 아직 판정되지 않은 공고도 여기에는 즉시 보여야 한다.
+  const shown = trials.filter(
     (trial) => filter === ALL || purposeOf(trial.trial_id) === filter,
   )
   const openCount = everything.reduce(
@@ -79,6 +85,12 @@ export default function Home() {
       return
     }
     navigate(`/intake/${encodeURIComponent(trial.trial_id)}`)
+  }
+
+  function openListedTrial(trial: TrialSummary) {
+    const verdict = verdictByTrial.get(trial.trial_id)
+    if (verdict) openTrial(verdict)
+    else navigate(`/intake/${encodeURIComponent(trial.trial_id)}`)
   }
 
   return (
@@ -218,32 +230,35 @@ export default function Home() {
           </div>
 
           <div className="stack-tight" style={{ gap: 'var(--space-1)' }}>
-            {shown.map((trial) => (
+            {shown.map((trial) => {
+              const verdict = verdictByTrial.get(trial.trial_id)
+              return (
               <button
                 key={trial.trial_id}
                 type="button"
                 className={
-                  trial.overall_status === 'EXCLUDED'
+                  verdict?.overall_status === 'EXCLUDED'
                     ? 'list-row list-row-all row-dim'
                     : 'list-row list-row-all'
                 }
-                onClick={() => openTrial(trial)}
+                onClick={() => openListedTrial(trial)}
               >
                 <span className="kicker" style={{ color: 'var(--color-accent-700)' }}>
                   {purposeOf(trial.trial_id)}
                 </span>
                 <div>
-                  <div className="row-title-sm">{trial.title}</div>
+                  <div className="row-title-sm">{trial.trial_name}</div>
                   <div className="row-meta">
                     {TRIAL_META[trial.trial_id] ?? trial.trial_id}
                   </div>
                 </div>
-                <div style={{ fontSize: 12.5 }}>{verdictSummary(trial)}</div>
+                <div style={{ fontSize: 12.5 }}>{verdictSummary(verdict)}</div>
                 <div style={{ textAlign: 'right', fontSize: 13, fontWeight: 600 }}>
-                  {fitScore(trial)}
+                  {fitScore(verdict)}
                 </div>
               </button>
-            ))}
+              )
+            })}
           </div>
 
           {!busy && !shown.length ? (

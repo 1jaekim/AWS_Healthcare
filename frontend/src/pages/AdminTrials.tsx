@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api } from '../api/endpoints'
 import type { TrialReviewItem, TrialReviewStatus } from '../api/types'
 import AppHeader from '../components/AppHeader'
+import { useMatching } from '../state/MatchingContext'
 
 const LABEL: Record<TrialReviewStatus, string> = {
   pending_review: '승인 대기',
@@ -15,6 +16,7 @@ function dateTime(epoch: number | null): string {
 }
 
 export default function AdminTrials() {
+  const { invalidate } = useMatching()
   const [status, setStatus] = useState<TrialReviewStatus>('pending_review')
   const [items, setItems] = useState<TrialReviewItem[]>([])
   const [notes, setNotes] = useState<Record<string, string>>({})
@@ -44,6 +46,9 @@ export default function AdminTrials() {
         decision,
         notes[item.source_key] ?? '',
       )
+      // 홈에 남아 있는 승인 전 추천 결과를 폐기한다. 다음 홈 진입에서 새 후보
+      // 전체를 다시 읽고 판정한다.
+      invalidate()
       await load()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : '처리에 실패했습니다.')
