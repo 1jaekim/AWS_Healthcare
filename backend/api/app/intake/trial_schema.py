@@ -67,6 +67,28 @@ _KOREAN_PURPOSE = {
     "covid-19": "코로나19",
 }
 
+_FIELD_LABELS = {
+    "eligibility_note": "기타 참여 요건",
+    "phq-9": "우울 증상 평가(PHQ-9)",
+    "c-ssrs_category": "자살 위험 평가(C-SSRS)",
+    "parent_study_week_72_visit": "선행 연구 72주차 방문",
+    "parent_study_intervention_dose_week_60_to_68": "선행 연구 60~68주차 투여",
+    "parent_study_intervention_permanent_discontinuation": "선행 연구 약물 영구 중단 여부",
+    "randomization_after_parent_study_week_72": "선행 연구 72주차 후 무작위 배정 시점",
+    "contraception_duration_after_last_dose": "마지막 투여 후 피임 유지 기간",
+}
+
+_UNIT_LABELS = {
+    "years": "세",
+    "year": "년",
+    "weeks": "주",
+    "week": "주",
+    "days": "일",
+    "day": "일",
+    "count": "회",
+    "boolean": "",
+}
+
 
 def _korean(value: Any) -> str:
     text = str(value or "").strip()
@@ -91,12 +113,25 @@ def _condition_text(criterion: dict[str, Any]) -> str:
     low = criterion.get("value_low")
     high = criterion.get("value_high")
     operator = str(criterion.get("operator") or "").strip()
-    unit = str(criterion.get("unit") or "").strip()
+    unit_raw = str(criterion.get("unit") or "").strip()
+    unit = _UNIT_LABELS.get(unit_raw.casefold(), unit_raw)
 
     if low not in (None, "") and high not in (None, ""):
         body = f"{low} ~ {high}"
     elif low not in (None, ""):
-        body = f"{operator} {low}".strip()
+        operator_text = {
+            ">=": "이상",
+            ">": "초과",
+            "<=": "이하",
+            "<": "미만",
+            "=": "해당",
+            "==": "해당",
+            "in": "중 하나",
+            "not_in": "해당하지 않음",
+            "has": "해당",
+        }.get(operator, operator)
+        body = f"{low} {unit} {operator_text}".strip()
+        return body
     elif high not in (None, ""):
         body = f"{operator} {high}".strip()
     else:
@@ -151,8 +186,13 @@ class TrialSchemaBuilder:
                 continue
             lines.extend(["", f"[{title}]"])
             for item in group:
-                spec = spec_for(str(item.get("field") or ""))
-                lines.append(f"- {spec.label}: {_condition_text(item)}")
+                field = str(item.get("field") or "")
+                if field == "eligibility_note":
+                    lines.append(f"- {item.get('value_low') or '세부 요건 확인'}")
+                    continue
+                spec = spec_for(field)
+                label = _FIELD_LABELS.get(field, spec.label.replace("_", " "))
+                lines.append(f"- {label}: {_condition_text(item)}")
 
         return "\n".join(line for line in lines if line is not None).strip()
 

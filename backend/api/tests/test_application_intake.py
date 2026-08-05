@@ -79,6 +79,31 @@ def test_extract_accepts_direct_schema_fields_without_values_wrapper() -> None:
     assert result["data"]["current_medications"] == ["메트포르민"]
 
 
+def test_korean_short_answer_falls_back_to_deterministic_common_fields() -> None:
+    service = _service({"unexpected": "model format"})
+    schema = service.generate_schema(
+        trial_id="TRIAL-KO",
+        notice_text="BMI 확인",
+        additional_fields=[
+            {
+                "name": "bmi",
+                "type": "number",
+                "title": "체질량지수",
+                "description": "최근 BMI",
+                "criterion_field": "bmi",
+            }
+        ],
+    )
+    result = service.start_application(
+        schema_id=schema["schema_id"],
+        application_text="만 25세이고 임상해본적은 없습니다. BMI는 24입니다",
+    )
+
+    assert result["data"]["age"] == 25
+    assert result["data"]["bmi"] == 24.0
+    assert result["data"]["prior_trial_participation"] is False
+
+
 def test_completed_json_maps_scalar_fields_to_orchestrator_supplements() -> None:
     application = {
         "application_id": "APP-1",

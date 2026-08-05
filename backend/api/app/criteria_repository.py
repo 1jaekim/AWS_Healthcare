@@ -286,7 +286,8 @@ class DynamoDBCriteriaRepository:
             "trial_id": str(item.get("trial_id") or ""),
             "trial_name": str(item.get("trial_title") or item.get("trial_id") or ""),
             "description": str(item.get("condition") or ""),
-            "purpose": str(item.get("intervention") or item.get("phase") or ""),
+            # 홈 필터는 약물명마다 칩을 만들지 않고 대상 질환/분야로 묶는다.
+            "purpose": str(item.get("condition") or "미분류"),
             "synthetic_trial": False,
             "criteria_count": len(rows),
         }

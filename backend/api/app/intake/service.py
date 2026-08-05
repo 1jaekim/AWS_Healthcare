@@ -304,11 +304,51 @@ class IntakeService:
             properties = json_schema.get("properties", {})
             direct = {key: value for key, value in payload.items() if key in properties}
             raw_values = direct if direct else None
+        deterministic = self._extract_common_values(text, json_schema)
         if not isinstance(raw_values, dict):
+            if deterministic:
+                return deterministic
             raise IntakeExtractionError(
                 "답변을 구조화하지 못했습니다. 문장을 조금 더 구체적으로 적어주세요."
             )
-        return self._validate_values(json_schema, raw_values)
+        # 나이·BMI·성별·과거 참여 여부처럼 명확한 공통 항목은 규칙 추출을
+        # 우선한다. 모델이 누락하거나 반대로 읽어도 사용자가 쓴 사실을 보존한다.
+        return {
+            **self._validate_values(json_schema, raw_values),
+            **deterministic,
+        }
+
+    @classmethod
+    def _extract_common_values(
+        cls, text: str, schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """한국어 짧은 답변에서 명확한 공통 필드를 결정론적으로 추출한다."""
+        values: dict[str, Any] = {}
+        properties = schema.get("properties", {})
+        age = re.search(r"(?:만\s*)?(\d{1,3})\s*세", text)
+        if age and "age" in properties:
+            values["age"] = int(age.group(1))
+        bmi = re.search(r"\bBMI\s*(?:는|가|=|:)?\s*(\d{1,2}(?:\.\d+)?)", text, re.I)
+        if bmi and "bmi" in properties:
+            values["bmi"] = float(bmi.group(1))
+        if "sex" in properties:
+            if re.search(r"(?:성별은?\s*)?(?:여성|여자)", text):
+                values["sex"] = "female"
+            elif re.search(r"(?:성별은?\s*)?(?:남성|남자)", text):
+                values["sex"] = "male"
+        if "prior_trial_participation" in properties:
+            if re.search(
+                r"(?:임상\s*시험|임상)(?:에|을|은|시험)?[^.\n]{0,15}"
+                r"(?:참여|해본|경험)[^.\n]{0,10}(?:없|아니)",
+                text,
+            ):
+                values["prior_trial_participation"] = False
+            elif re.search(
+                r"(?:임상\s*시험|임상)[^.\n]{0,15}(?:참여|해본|경험)[^.\n]{0,8}(?:있|했)",
+                text,
+            ):
+                values["prior_trial_participation"] = True
+        return cls._validate_values(schema, values)
 
     @classmethod
     def _normalize_field(

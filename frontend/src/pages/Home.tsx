@@ -22,6 +22,7 @@ export default function Home() {
   const navigate = useNavigate()
   const { trials, recommendation, busy, error, ranAt, loadTrials, run } = useMatching()
   const [filter, setFilter] = useState(ALL)
+  const [showAllFields, setShowAllFields] = useState(false)
 
   const personId = account?.personId ?? 1
 
@@ -55,6 +56,12 @@ export default function Home() {
     () => [ALL, ...Array.from(new Set(trials.map((t) => purposeOf(t.trial_id))))],
     [trials, purposeOf],
   )
+  const visibleFields = useMemo(() => {
+    if (showAllFields || fields.length <= 6) return fields
+    const compact = fields.slice(0, 6)
+    if (!compact.includes(filter)) compact.push(filter)
+    return compact
+  }, [fields, filter, showAllFields])
 
   const top = recommendation?.recommended_trials ?? []
   // "전체 모집공고"는 추천 실행 결과가 아니라 승인 공고 원장을 기준으로 한다.
@@ -226,7 +233,19 @@ export default function Home() {
           </div>
 
           <div style={{ marginBottom: 'var(--space-6)' }}>
-            <Chips options={fields} selected={[filter]} onToggle={setFilter} />
+            <div className="inline-wrap" style={{ alignItems: 'center' }}>
+              <Chips options={visibleFields} selected={[filter]} onToggle={setFilter} />
+              {fields.length > 6 ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  style={{ minHeight: 34, margin: 0, fontSize: 12.5 }}
+                  onClick={() => setShowAllFields((current) => !current)}
+                >
+                  {showAllFields ? '접기' : `분야 더보기 +${fields.length - 6}`}
+                </button>
+              ) : null}
+            </div>
           </div>
 
           <div className="stack-tight" style={{ gap: 'var(--space-1)' }}>
