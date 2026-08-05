@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Sequence
 
 from ..actions.recommendation import TrialRanker
@@ -24,6 +25,7 @@ class RecommendationOrchestrator:
         audit: AuditTrail,
         ranker: TrialRanker | None = None,
         a2a_max_criteria: int = 5,
+        max_workers: int = 2,
     ) -> None:
         self._screening = screening
         self._repository = repository
@@ -32,6 +34,7 @@ class RecommendationOrchestrator:
         self._audit = audit
         self._ranker = ranker or TrialRanker()
         self._a2a_max_criteria = min(5, max(1, a2a_max_criteria))
+        self._max_workers = min(5, max(1, max_workers))
 
     def run(
         self,
@@ -42,14 +45,24 @@ class RecommendationOrchestrator:
         actor: str,
     ) -> dict[str, Any]:
         recommendation_id = self._runs.new_recommendation_id()
-        outputs = [
-            self._screening.run(
+        def screen(trial_id: str) -> Any:
+            return self._screening.run(
                 person_id=person_id,
                 trial_id=trial_id,
                 actor=actor,
             )
-            for trial_id in trial_ids
-        ]
+
+        # executor.map은 입력 순서대로 결과를 돌려준다. 따라서 병렬 실행으로
+        # 지연시간을 줄이면서 기존의 결정론적 정렬·감사 계약은 유지한다.
+        worker_count = min(self._max_workers, len(trial_ids))
+        if worker_count <= 1:
+            outputs = [screen(trial_id) for trial_id in trial_ids]
+        else:
+            with ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="trial-screening",
+            ) as executor:
+                outputs = list(executor.map(screen, trial_ids))
         recommended, excluded = self._ranker.rank(
             outputs,
             trial_catalog=(
@@ -73,6 +86,7 @@ class RecommendationOrchestrator:
                 "top_k": top_k,
                 "a2a_max_rounds": 2,
                 "a2a_max_criteria_per_trial": self._a2a_max_criteria,
+                "recommendation_max_workers": worker_count,
             },
         }
         self._runs.save_recommendation(recommendation_id, payload)

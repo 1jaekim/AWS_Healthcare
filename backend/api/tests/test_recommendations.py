@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -10,6 +12,7 @@ from app.actions.recommendation import TrialRanker
 from app.domain.models import CriterionResult
 from app.domain.states import CriterionKind, CriterionStatus
 from app.main import app
+from app.orchestration.recommendation import RecommendationOrchestrator
 
 
 def _criterion(
@@ -171,6 +174,7 @@ def test_recommendation_api_runs_candidates_and_persists_result() -> None:
             "top_k": 2,
             "a2a_max_rounds": 2,
             "a2a_max_criteria_per_trial": 5,
+            "recommendation_max_workers": len(trials),
         }
         assert [item["rank"] for item in body["recommended_trials"]] == list(
             range(1, len(body["recommended_trials"]) + 1)
@@ -210,3 +214,61 @@ def test_recommendation_api_rejects_unknown_trial() -> None:
 
         assert response.status_code == 404
         assert response.json()["detail"]["trial_ids"] == ["MISSING"]
+
+
+def test_recommendation_runs_trials_concurrently_and_preserves_order() -> None:
+    active = 0
+    peak_active = 0
+    lock = threading.Lock()
+
+    class ScreeningStub:
+        def run(self, *, person_id: int, trial_id: str, actor: str):
+            nonlocal active, peak_active
+            with lock:
+                active += 1
+                peak_active = max(peak_active, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+            return SimpleNamespace(run=SimpleNamespace(trial_id=trial_id))
+
+    class RankerStub:
+        def rank(self, outputs, *, trial_catalog, top_k):
+            return ([{"trial_id": item.run.trial_id} for item in outputs], [])
+
+    class RunStoreStub:
+        def new_recommendation_id(self):
+            return "REC-test"
+
+        def save_recommendation(self, recommendation_id, payload):
+            self.payload = payload
+
+    class AuditStub:
+        def record(self, *args, **kwargs):
+            return None
+
+    orchestrator = RecommendationOrchestrator(
+        screening=ScreeningStub(),
+        repository=SimpleNamespace(
+            trials={trial_id: {} for trial_id in ("T-1", "T-2", "T-3")}
+        ),
+        run_store=RunStoreStub(),
+        audit=AuditStub(),
+        ranker=RankerStub(),
+        max_workers=2,
+    )
+
+    result = orchestrator.run(
+        person_id=1,
+        trial_ids=["T-1", "T-2", "T-3"],
+        top_k=3,
+        actor="test",
+    )
+
+    assert peak_active == 2
+    assert [item["trial_id"] for item in result["recommended_trials"]] == [
+        "T-1",
+        "T-2",
+        "T-3",
+    ]
+    assert result["limits"]["recommendation_max_workers"] == 2
