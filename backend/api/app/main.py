@@ -72,6 +72,15 @@ _LIMITATIONS = [
 ]
 
 
+def _trial_catalog(container: Container):
+    catalog = getattr(container, "trial_catalog", None)
+    if catalog is not None:
+        return catalog
+    from .criteria_repository import LocalTrialCatalog
+
+    return LocalTrialCatalog(container.repository)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -235,18 +244,19 @@ def get_patient_timeline(
 
 
 @app.get("/api/v1/trials", response_model=list[TrialSummary], tags=["trials"])
-def list_trials(repository: Repository) -> list[dict]:
-    return repository.list_trials()
+def list_trials(container: Ctx) -> list[dict]:
+    return _trial_catalog(container).list_trials()
 
 
 @app.get("/api/v1/trials/{trial_id}", response_model=TrialDetail, tags=["trials"])
-def get_trial(trial_id: str, repository: Repository) -> dict:
-    trial = repository.trials.get(trial_id)
+def get_trial(trial_id: str, container: Ctx) -> dict:
+    catalog = _trial_catalog(container)
+    trial = catalog.get_trial(trial_id)
     if not trial:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trial not found")
     return {
-        **repository.trial_summary(trial),
-        "criteria": repository.trial_criteria(trial_id),
+        **trial,
+        "criteria": catalog.trial_criteria(trial_id),
     }
 
 
@@ -308,15 +318,16 @@ def prepare_trial_application_schema(trial_id: str, container: Ctx) -> dict:
     공고문 자유 텍스트에서 LLM 으로 필드를 만들고 싶으면
     `POST /api/v1/application-schemas` 를 쓴다. 이 경로는 모델을 부르지 않는다.
     """
-    trial = container.repository.trials.get(trial_id)
+    catalog = _trial_catalog(container)
+    trial = catalog.get_trial(trial_id)
     if trial is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Trial not found"
         )
 
     request = TrialSchemaBuilder().build(
-        trial=container.repository.trial_summary(trial),
-        criteria=container.repository.trial_criteria(trial_id),
+        trial=trial,
+        criteria=catalog.trial_criteria(trial_id),
     )
     try:
         return container.application_intake.generate_schema(
@@ -349,12 +360,15 @@ def get_application_schema(schema_id: str, container: Ctx) -> dict:
     response_model=ApplicationIntakeResponse,
     tags=["applications"],
 )
-def start_application(payload: ApplicationStartRequest, container: Ctx) -> dict:
+def start_application(
+    payload: ApplicationStartRequest, container: Ctx, principal: CurrentUser
+) -> dict:
     """첫 자연어 지원서를 추출하고 누락된 필드의 추가 작성 요청을 반환한다."""
     try:
         return container.application_intake.start_application(
             schema_id=payload.schema_id,
             application_text=payload.application_text,
+            owner_sub=principal.subject,
         )
     except ApplicationSchemaNotFound as exc:
         raise HTTPException(
@@ -375,11 +389,12 @@ def add_application_response(
     application_id: str,
     payload: ApplicationAdditionalResponse,
     container: Ctx,
+    principal: CurrentUser,
 ) -> dict:
     """추가 자연어 답변을 기존 값에 병합하고 완성 여부를 다시 검사한다."""
     try:
         return container.application_intake.add_response(
-            application_id, payload.response_text
+            application_id, payload.response_text, owner_sub=principal.subject
         )
     except ApplicationNotFound as exc:
         raise HTTPException(
@@ -401,9 +416,13 @@ def add_application_response(
     response_model=ApplicationIntakeResponse,
     tags=["applications"],
 )
-def get_application(application_id: str, container: Ctx) -> dict:
+def get_application(
+    application_id: str, container: Ctx, principal: CurrentUser
+) -> dict:
     try:
-        return container.application_intake.get_application(application_id)
+        return container.application_intake.get_application(
+            application_id, owner_sub=principal.subject
+        )
     except ApplicationNotFound as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Application not found"
@@ -429,7 +448,7 @@ def screen_completed_application(
         )
     try:
         application, schema = container.application_intake.completed_application(
-            application_id
+            application_id, owner_sub=principal.subject
         )
     except ApplicationNotFound as exc:
         raise HTTPException(
@@ -442,7 +461,7 @@ def screen_completed_application(
         ) from exc
 
     trial_id = str(application["trial_id"])
-    if trial_id not in container.repository.trials:
+    if not _trial_catalog(container).has_trial(trial_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Trial not found"
         )
@@ -539,7 +558,7 @@ def run_screening(
     ensure_person_access(principal, payload.person_id)
     if payload.person_id not in container.repository.patients:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
-    if payload.trial_id not in container.repository.trials:
+    if not _trial_catalog(container).has_trial(payload.trial_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trial not found")
     try:
         output = container.orchestrator.run(
@@ -624,12 +643,15 @@ def run_recommendations(
         )
 
     trial_ids = list(
-        dict.fromkeys(payload.trial_ids or sorted(container.repository.trials))
+        dict.fromkeys(
+            payload.trial_ids
+            or [item["trial_id"] for item in _trial_catalog(container).list_trials()]
+        )
     )
     missing = [
         trial_id
         for trial_id in trial_ids
-        if trial_id not in container.repository.trials
+        if not _trial_catalog(container).has_trial(trial_id)
     ]
     if missing:
         raise HTTPException(

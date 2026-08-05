@@ -105,7 +105,7 @@ class MainStack(Stack):
             "S3_PREFIX_RAG": "rag/",
             "S3_PREFIX_TRIALS": "trials/",
             "DYNAMODB_CRITERIA_TABLE": self.criteria_table.table_name,
-            "BEDROCK_MODEL_ID": "anthropic.claude-3-sonnet-20240229-v1:0",
+            "BEDROCK_MODEL_ID": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
             "KNOWLEDGE_BASE_ID": knowledge_base_id,
             # 비식별 문서만 GraphRAG 리전으로 건너간다. 비워두면 서울 버킷에
             # 그대로 쓰므로 KB 가 읽지 못한다 — 리전이 갈린 뒤로는 이 두 값이

@@ -172,7 +172,7 @@ class IntakeService:
         return record
 
     def start_application(
-        self, *, schema_id: str, application_text: str
+        self, *, schema_id: str, application_text: str, owner_sub: str = ""
     ) -> dict[str, Any]:
         schema = self._require_schema(schema_id)
         values = self._extract(schema["json_schema"], application_text, {})
@@ -181,6 +181,7 @@ class IntakeService:
             "application_id": f"APP-{uuid4().hex}",
             "schema_id": schema_id,
             "trial_id": schema["trial_id"],
+            "owner_sub": owner_sub,
             "data": values,
             "iteration": 1,
             "follow_up_count": 0,
@@ -209,8 +210,10 @@ class IntakeService:
         ).hexdigest()[:16]
         return {"version": version, "json_schema": json_schema}
 
-    def add_response(self, application_id: str, response_text: str) -> dict[str, Any]:
-        record = self._require_application(application_id)
+    def add_response(
+        self, application_id: str, response_text: str, *, owner_sub: str | None = None
+    ) -> dict[str, Any]:
+        record = self._require_application(application_id, owner_sub=owner_sub)
         if record.get("status") == "MAX_FOLLOW_UPS_REACHED":
             raise FollowUpLimitReached(application_id)
         schema = self._require_schema(record["schema_id"])
@@ -224,15 +227,17 @@ class IntakeService:
         record["updated_at"] = datetime.now(UTC).isoformat()
         return self._process(record, schema)
 
-    def get_application(self, application_id: str) -> dict[str, Any]:
-        record = self._require_application(application_id)
+    def get_application(
+        self, application_id: str, *, owner_sub: str | None = None
+    ) -> dict[str, Any]:
+        record = self._require_application(application_id, owner_sub=owner_sub)
         return self._response(record, self._require_schema(record["schema_id"]))
 
     def completed_application(
-        self, application_id: str
+        self, application_id: str, *, owner_sub: str | None = None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """다음 파이프라인으로 넘길 완성 레코드와 고정 스키마를 반환한다."""
-        record = self._require_application(application_id)
+        record = self._require_application(application_id, owner_sub=owner_sub)
         if record.get("status") != "COMPLETE":
             raise ApplicationNotComplete(application_id)
         schema = self._require_schema(record["schema_id"])
@@ -499,8 +504,13 @@ class IntakeService:
             raise ApplicationSchemaNotFound(schema_id)
         return value
 
-    def _require_application(self, application_id: str) -> dict[str, Any]:
+    def _require_application(
+        self, application_id: str, *, owner_sub: str | None = None
+    ) -> dict[str, Any]:
         value = self._store.get_application(application_id)
         if value is None:
+            raise ApplicationNotFound(application_id)
+        if owner_sub is not None and value.get("owner_sub") != owner_sub:
+            # 다른 사용자의 지원서 존재 여부도 노출하지 않는다.
             raise ApplicationNotFound(application_id)
         return value

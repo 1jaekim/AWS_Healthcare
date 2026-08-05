@@ -75,6 +75,18 @@ class ModelSettings:
     )
     """한 실행에서 2라운드 교차 검토할 미해소 기준 수 상한."""
 
+    recommendation_max_workers: int = field(
+        default_factory=lambda: min(
+            5, max(1, _int("RECOMMENDATION_MAX_WORKERS", 2))
+        )
+    )
+    """추천 시 동시에 스크리닝할 공고 수.
+
+    Bedrock 호출은 네트워크 대기가 대부분이므로 공고를 완전히 순차 처리할 이유가
+    없다. 다만 무제한 병렬화는 모델 throttling과 비용 급증을 만들 수 있어 1~5로
+    제한한다. 1로 두면 기존 순차 동작으로 즉시 되돌릴 수 있다.
+    """
+
     criterion_judge_enabled: bool = field(
         default_factory=lambda: _flag("CRITERION_JUDGE_ENABLED", True)
     )
@@ -192,6 +204,20 @@ class AuthSettings:
         return f"{self.issuer}/.well-known/jwks.json"
 
 
+@dataclass(frozen=True)
+class CriteriaStoreSettings:
+    """Protocol Parser가 저장한 승인 공고 기준 연결."""
+
+    table_name: str | None = field(
+        default_factory=lambda: os.getenv("DYNAMODB_CRITERIA_TABLE") or None
+    )
+    region: str = field(default_factory=resolve_region)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.table_name)
+
+
 DEFAULT_CORS_ORIGINS = (
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -225,6 +251,7 @@ class Settings:
     model: ModelSettings = field(default_factory=ModelSettings)
     graphrag: GraphRagSettings = field(default_factory=GraphRagSettings)
     auth: AuthSettings = field(default_factory=AuthSettings)
+    criteria_store: CriteriaStoreSettings = field(default_factory=CriteriaStoreSettings)
     cors_allow_origins: tuple[str, ...] = field(default_factory=_origins)
 
 

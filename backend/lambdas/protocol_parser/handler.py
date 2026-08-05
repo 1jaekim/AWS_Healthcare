@@ -12,6 +12,7 @@
 트리거: EventBridge → Step Functions → 이 Lambda
 """
 import json
+import hashlib
 import logging
 import os
 from typing import Any
@@ -29,7 +30,10 @@ textract_client = boto3.client("textract")
 # ─── 환경변수 ────────────────────────────────────────────
 BUCKET_NAME = os.environ.get("S3_BUCKET_NAME", "aws-healthcare-data")
 CRITERIA_TABLE = os.environ.get("DYNAMODB_CRITERIA_TABLE", "CriteriaStore")
-BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-sonnet-20240229-v1:0")
+BEDROCK_MODEL_ID = os.environ.get(
+    "BEDROCK_MODEL_ID",
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+)
 AWS_REGION = os.environ.get("AWS_REGION", "ap-northeast-2")
 
 table = dynamodb.Table(CRITERIA_TABLE)
@@ -85,13 +89,15 @@ PARSING_PROMPT = """당신은 임상시험 프로토콜 분석 전문가입니�
 """
 
 
-def extract_text_from_pdf(bucket: str, key: str) -> str:
+def extract_text_from_document(bucket: str, key: str) -> str:
     """
     S3의 PDF에서 텍스트 추출
     Textract 사용 (동기 호출, 단일 페이지) 또는 S3 Select (텍스트)
     """
-    # PDF인 경우 Textract 사용
-    if key.lower().endswith(".pdf"):
+    suffix = key.lower().rsplit(".", 1)[-1] if "." in key else ""
+    # Playwright 스크린샷과 기존 PDF는 바이너리를 직접 디코딩하지 않고
+    # Textract OCR을 거친다.
+    if suffix in {"pdf", "png", "jpg", "jpeg", "tif", "tiff"}:
         try:
             response = textract_client.detect_document_text(
                 Document={
@@ -109,7 +115,11 @@ def extract_text_from_pdf(bucket: str, key: str) -> str:
             ]
             return "\n".join(lines)
         except Exception as e:
-            logger.warning(f"Textract 실패, 직접 읽기 시도: {e}")
+            logger.error(f"Textract OCR 실패: {e}")
+            raise
+
+    if suffix not in {"txt", "md", "json"}:
+        raise ValueError(f"지원하지 않는 공고 파일 형식입니다: {suffix or 'unknown'}")
 
     # 텍스트 파일인 경우 직접 읽기
     response = s3_client.get_object(Bucket=bucket, Key=key)
@@ -233,7 +243,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     # 1. 텍스트 추출
     try:
-        document_text = extract_text_from_pdf(bucket, source_key)
+        document_text = extract_text_from_document(bucket, source_key)
         logger.info(f"텍스트 추출 완료: {len(document_text)} chars")
     except Exception as e:
         logger.error(f"텍스트 추출 실패: {e}")
@@ -256,6 +266,13 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     except Exception as e:
         logger.error(f"Bedrock 파싱 실패: {e}")
         raise
+
+    # 공개 모집 공고에는 NCT 번호가 없는 경우가 많다. UNKNOWN 하나로 덮어쓰지
+    # 않도록 S3 source key의 안정적인 해시를 식별자로 사용한다.
+    parsed_trial_id = str(trial_data.get("trial_id") or "").strip()
+    if not parsed_trial_id or parsed_trial_id.upper() == "UNKNOWN":
+        source_digest = hashlib.sha256(source_key.encode("utf-8")).hexdigest()[:16]
+        trial_data["trial_id"] = f"SRC-{source_digest}"
 
     # 3. DynamoDB 저장
     try:
