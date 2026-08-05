@@ -374,6 +374,19 @@ def start_application(
             owner_sub=principal.subject,
         )
     except ApplicationSchemaNotFound as exc:
+        # 배포 전 인메모리 저장소가 발급한 결정론적 schema_id도 복구한다.
+        # 공고와 기준이 그대로라면 동일 ID가 다시 나오며 DynamoDB에 저장된다.
+        prefix = "APP-SCHEMA-"
+        encoded = payload.schema_id.removeprefix(prefix)
+        trial_id, separator, _fingerprint = encoded.rpartition("-")
+        if payload.schema_id.startswith(prefix) and separator and trial_id:
+            regenerated = prepare_trial_application_schema(trial_id, container)
+            if regenerated["schema_id"] == payload.schema_id:
+                return container.application_intake.start_application(
+                    schema_id=payload.schema_id,
+                    application_text=payload.application_text,
+                    owner_sub=principal.subject,
+                )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Application schema not found"
         ) from exc
