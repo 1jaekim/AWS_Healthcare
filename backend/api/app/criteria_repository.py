@@ -222,4 +222,3 @@ __all__ = [
     "flatten_protocol_item",
     "normalize_operator",
 ]
-
