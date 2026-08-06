@@ -54,13 +54,24 @@ class FrontendStack(Stack):
             for status in (403, 404)
         ]
 
+        # CloudFront OAC names are account-global even though this stack is
+        # deployed in a region. Keep regional deployments from colliding.
+        self.origin_access_control = cloudfront.S3OriginAccessControl(
+            self,
+            "FrontendOriginAccessControl",
+            origin_access_control_name=f"healthcare-frontend-oac-{self.region}",
+        )
+
         self.distribution = cloudfront.Distribution(
             self,
             "FrontendDistribution",
             comment="임상시험 매칭 프론트엔드",
             default_root_object="index.html",
             default_behavior=cloudfront.BehaviorOptions(
-                origin=origins.S3BucketOrigin.with_origin_access_control(self.bucket),
+                origin=origins.S3BucketOrigin.with_origin_access_control(
+                    self.bucket,
+                    origin_access_control=self.origin_access_control,
+                ),
                 viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
                 allowed_methods=cloudfront.AllowedMethods.ALLOW_GET_HEAD_OPTIONS,
                 cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED,

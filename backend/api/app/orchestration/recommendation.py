@@ -39,12 +39,13 @@ class RecommendationOrchestrator:
     def run(
         self,
         *,
-        person_id: int,
+        person_id: int | None,
         trial_ids: Sequence[str],
         top_k: int,
         actor: str,
         supplements_by_trial: dict[str, dict[str, Any]] | None = None,
-        allow_profile_only: bool = False,
+        application_id: str | None = None,
+        owner_sub: str | None = None,
     ) -> dict[str, Any]:
         recommendation_id = self._runs.new_recommendation_id()
         def screen(trial_id: str) -> Any:
@@ -52,8 +53,9 @@ class RecommendationOrchestrator:
             supplement = (supplements_by_trial or {}).get(trial_id)
             if supplement is not None:
                 kwargs["supplements"] = supplement
-            if allow_profile_only:
-                kwargs["allow_profile_only"] = True
+            if application_id:
+                kwargs["application_id"] = application_id
+                kwargs["owner_sub"] = owner_sub
             return self._screening.run(
                 person_id=person_id,
                 trial_id=trial_id,
@@ -84,6 +86,9 @@ class RecommendationOrchestrator:
         payload = {
             "recommendation_id": recommendation_id,
             "person_id": person_id,
+            "application_id": application_id,
+            # API 응답 모델에는 노출하지 않고 저장소 소유권 검사에만 쓴다.
+            "owner_sub": owner_sub,
             "evaluated_trials": len(outputs),
             "recommended_trials": recommended,
             "excluded_trials": excluded,
@@ -104,6 +109,7 @@ class RecommendationOrchestrator:
             actor=actor,
             run_id=recommendation_id,
             person_id=person_id,
+            application_id=application_id,
             evaluated_trials=len(outputs),
             recommended_trial_ids=[item["trial_id"] for item in recommended],
             excluded_trial_ids=[item["trial_id"] for item in excluded],

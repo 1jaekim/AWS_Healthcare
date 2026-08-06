@@ -17,6 +17,7 @@ EvidenceSource = Literal[
     "NARRATIVE_EMR",
     "RULE_ENGINE",
     "PATIENT_REPORTED",
+    "APPLICATION",
 ]
 """근거의 출처.
 
@@ -26,6 +27,7 @@ EvidenceSource = Literal[
 """
 
 PATIENT_REPORTED: EvidenceSource = "PATIENT_REPORTED"
+APPLICATION: EvidenceSource = "APPLICATION"
 
 
 @dataclass(frozen=True)
@@ -75,7 +77,11 @@ class Observation:
 
 @dataclass(frozen=True)
 class NarrativeSnippet:
-    """자유서술 EMR 에서 추출한 근거 문장."""
+    """검색된 원문 근거 문장.
+
+    ``document_type``으로 환자 임상기록과 공개 공고·표준문서를 구분한다. 공개
+    참고문서는 지원자의 사실값으로 해석하지 않고 기준의 출처·설명에만 사용한다.
+    """
 
     note_id: str
     encounter_id: str
@@ -83,6 +89,8 @@ class NarrativeSnippet:
     snippet: str
     matched_terms: tuple[str, ...]
     score: float
+    document_type: str = "patient_evidence"
+    source_title: str | None = None
 
 
 @dataclass(frozen=True)
@@ -165,7 +173,7 @@ class ScreeningRun:
     """9계층에 저장되는 실행 레코드."""
 
     run_id: str
-    person_id: int
+    person_id: int | None
     trial_id: str
     criteria_version: str
     index_encounter_id: str

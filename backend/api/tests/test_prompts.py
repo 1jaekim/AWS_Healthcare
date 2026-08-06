@@ -48,7 +48,7 @@ LOCKED: dict[str, tuple[str, str]] = {
     "intake_normalizer": ("1.0", "4d4108db0a8d"),
     "nli_verifier": ("1.0", "e426b2f7ec26"),
     "question_writer": ("1.0", "69eb08054734"),
-    "unknown_deliberation": ("1.0", "cd12314e1b3e"),
+    "unknown_deliberation": ("1.1", "4bc079e4af4b"),
 }
 
 

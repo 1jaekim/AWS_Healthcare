@@ -1,10 +1,9 @@
-"""EvidenceGatheringAgent가 사용하는 Bedrock GraphRAG Tool 계약."""
+"""공개 공고·표준문서용 Bedrock GraphRAG Tool 계약."""
 
 from __future__ import annotations
 
 import json
 
-import pytest
 from botocore.session import get_session
 from botocore.validate import validate_parameters
 
@@ -17,15 +16,10 @@ from app.domain.states import CriterionKind
 from app.orchestration.gateway import ToolGateway, default_policy
 from app.orchestration.router import CriterionPlan, ExecutionPlan
 from app.safety.observability import TraceCollector
-from app.safety.pseudonyms import PatientKeyResolver, pseudonymize_patient_id
 from app.tools.base import ToolContext
 from app.tools.evidence_retrieval import (
     BedrockKnowledgeBaseEvidenceRetrievalTool,
 )
-from backend.lambdas.sanitizer.graphrag_documents import pseudonymize_identifier
-
-
-SECRET = "shared-test-secret"
 
 
 class CapturingBedrock:
@@ -34,200 +28,122 @@ class CapturingBedrock:
 
     def retrieve(self, **kwargs):
         self.calls.append(kwargs)
-        patient_key = kwargs["retrievalConfiguration"]["vectorSearchConfiguration"][
-            "filter"
-        ]["andAll"][0]["equals"]["value"]
         return {
             "retrievalResults": [
                 {
-                    "content": {
-                        "text": (
-                            "- 이벤트 참조: evt_abc123\n"
-                            "HbA1c 7.8%로 기록되어 있다."
-                        )
-                    },
-                    "score": 0.87,
+                    "content": {"text": "임신 중인 지원자는 제외한다."},
+                    "score": 0.91,
                     "metadata": {
-                        "patient_key": patient_key,
+                        "document_type": "trial_notice",
+                        "trial_id": "TRIAL-1",
+                        "source_id": "trial-notice:TRIAL-1",
+                        "title": "공개 모집 공고",
+                    },
+                    "location": {"s3Location": {"uri": "s3://bucket/rag/references/trials/TRIAL-1.md"}},
+                },
+                {
+                    "content": {"text": "HbA1c 단위는 %로 표기한다."},
+                    "score": 0.74,
+                    "metadata": {
+                        "document_type": "standard_document",
+                        "source_id": "standard:hba1c",
+                        "title": "검사 표준",
+                    },
+                },
+                {
+                    "content": {"text": "환자 HbA1c 8.2%"},
+                    "score": 0.99,
+                    "metadata": {
                         "document_type": "patient_evidence",
+                        "patient_key": "pt_forbidden",
                     },
-                    "location": {
-                        "s3Location": {
-                            "uri": "s3://bucket/rag/patients/pt_expected.md"
-                        }
-                    },
-                }
+                },
             ]
         }
 
 
-def _context(patient_key: str | None = "pt_expected") -> ToolContext:
+def _context() -> ToolContext:
     return ToolContext(
         run_id="RUN-RAG",
-        person_id=12345,
+        person_id=None,
         trial_id="TRIAL-1",
-        index_encounter_id="raw-encounter",
-        index_date="2026-01-01",
-        patient_key=patient_key,
+        index_encounter_id="APPLICATION-APP-1",
+        index_date="2026-08-06",
     )
 
 
-def test_bedrock_retrieve_always_filters_by_patient_and_document_type() -> None:
+def test_bedrock_retrieve_filters_public_references_without_patient_key() -> None:
     client = CapturingBedrock()
     tool = BedrockKnowledgeBaseEvidenceRetrievalTool(
-        knowledge_base_id="ABCDEFGHIJ",
-        client=client,
+        knowledge_base_id="ABCDEFGHIJ", client=client
     )
 
-    results = tool.invoke(_context(), terms=("HbA1c",), top_k=3)
+    results = tool.invoke(_context(), terms=("임신 중",), top_k=5)
 
-    assert len(client.calls) == 1
     request = client.calls[0]
-    assert request["knowledgeBaseId"] == "ABCDEFGHIJ"
-    filters = request["retrievalConfiguration"]["vectorSearchConfiguration"][
+    filter_value = request["retrievalConfiguration"]["vectorSearchConfiguration"][
         "filter"
-    ]["andAll"]
-    assert filters == [
-        {"equals": {"key": "patient_key", "value": "pt_expected"}},
-        {
-            "equals": {
-                "key": "document_type",
-                "value": "patient_evidence",
-            }
-        },
     ]
+    assert filter_value == {
+        "orAll": [
+            {
+                "andAll": [
+                    {"equals": {"key": "document_type", "value": "trial_notice"}},
+                    {"equals": {"key": "trial_id", "value": "TRIAL-1"}},
+                ]
+            },
+            {"equals": {"key": "document_type", "value": "standard_document"}},
+        ]
+    }
     serialized = json.dumps(request, ensure_ascii=False)
-    assert "12345" not in serialized
-    assert "raw-encounter" not in serialized
+    assert "patient_key" not in serialized
     assert "person_id" not in serialized
-    assert results[0].note_id == "evt_abc123"
-    assert results[0].score == 0.87
+    assert [item.document_type for item in results] == [
+        "trial_notice",
+        "standard_document",
+    ]
+    assert results[0].note_id == "trial-notice:TRIAL-1"
     operation = get_session().get_service_model("bedrock-agent-runtime").operation_model(
         "Retrieve"
     )
     validate_parameters(request, operation.input_shape)
 
 
-def test_bedrock_retrieve_rejects_missing_patient_key_before_api_call() -> None:
-    client = CapturingBedrock()
-    tool = BedrockKnowledgeBaseEvidenceRetrievalTool(
-        knowledge_base_id="ABCDEFGHIJ",
-        client=client,
-    )
-
-    with pytest.raises(ValueError, match="patient_key"):
-        tool.invoke(_context(None), terms=("임신",), top_k=3)
-
-    assert client.calls == []
-
-
-def test_mismatched_patient_metadata_is_discarded() -> None:
-    response = {
-        "retrievalResults": [
-            {
-                "content": {"text": "다른 환자의 HbA1c 기록"},
-                "score": 0.99,
-                "metadata": {
-                    "patient_key": "pt_other",
-                    "document_type": "patient_evidence",
-                },
-            }
-        ]
-    }
-
-    assert BedrockKnowledgeBaseEvidenceRetrievalTool._snippets(
-        response,
-        ("HbA1c",),
-        3,
-        "pt_expected",
-    ) == []
-
-
-def test_api_and_sanitizer_use_same_patient_key_contract() -> None:
-    assert pseudonymize_patient_id(12345, SECRET) == pseudonymize_identifier(
-        "pt", "12345", SECRET
-    )
-
-
-def test_secret_manager_value_is_loaded_once() -> None:
-    class Secrets:
-        calls = 0
-
-        def get_secret_value(self, **kwargs):
-            self.calls += 1
-            assert kwargs == {"SecretId": "arn:secret"}
-            return {"SecretString": SECRET}
-
-    secrets = Secrets()
-    resolver = PatientKeyResolver(
-        secret_arn="arn:secret",
-        secrets_client=secrets,
-    )
-
-    assert resolver(1).startswith("pt_")
-    assert resolver(2).startswith("pt_")
-    assert secrets.calls == 1
-
-
-def test_container_registers_bedrock_adapter_when_kb_is_configured() -> None:
+def test_container_configures_graphrag_without_pseudonym_secret() -> None:
     client = CapturingBedrock()
     container = build_container(
         settings.data_dir,
-        graphrag_config=GraphRagSettings(
-            knowledge_base_id="ABCDEFGHIJ",
-            patient_pseudonym_secret=SECRET,
-        ),
+        graphrag_config=GraphRagSettings(knowledge_base_id="ABCDEFGHIJ"),
         retrieval_client=client,
     )
-    patient_key = pseudonymize_patient_id(12345, SECRET)
 
     results = container.gateway.invoke(
-        "evidence_retrieval_tool",
-        _context(patient_key),
-        terms=("HbA1c",),
-        top_k=3,
+        "evidence_retrieval_tool", _context(), terms=("임신 중",), top_k=3
     )
 
     assert container.retrieval_mode == "bedrock_graphrag"
-    assert results[0].note_id == "evt_abc123"
-    assert client.calls[0]["retrievalConfiguration"]["vectorSearchConfiguration"][
-        "filter"
-    ]["andAll"][0]["equals"]["value"] == patient_key
+    assert results[0].document_type == "trial_notice"
+    assert len(client.calls) == 1
 
 
-def test_configured_kb_never_silently_falls_back_without_pseudonym_secret() -> None:
-    with pytest.raises(ValueError, match="PATIENT_PSEUDONYM_SECRET"):
-        build_container(
-            settings.data_dir,
-            graphrag_config=GraphRagSettings(
-                knowledge_base_id="ABCDEFGHIJ",
-                patient_pseudonym_secret=None,
-                patient_pseudonym_secret_arn=None,
-            ),
-            retrieval_client=CapturingBedrock(),
-        )
-
-
-def test_evidence_gathering_agent_reaches_bedrock_through_gateway() -> None:
+def test_evidence_agent_reaches_reference_rag_without_patient_identity() -> None:
     client = CapturingBedrock()
     tool = BedrockKnowledgeBaseEvidenceRetrievalTool(
-        knowledge_base_id="ABCDEFGHIJ",
-        client=client,
+        knowledge_base_id="ABCDEFGHIJ", client=client
     )
     trace = TraceCollector()
     gateway = ToolGateway(trace)
     gateway.register(tool, allow=default_policy()[tool.name])
-
     rule = CriterionRule(
         criterion_id="T-C01",
-        criterion_type="INCLUSION",
-        field_name="hba1c",
-        operator="between",
-        value_low="7.5",
-        value_high="10.5",
-        unit="%",
-        label="최근 HbA1c",
-        kind=CriterionKind.NARRATIVE,
+        criterion_type="EXCLUSION",
+        field_name="active_pregnancy",
+        operator="=",
+        value_low="false",
+        value_high=None,
+        unit="boolean",
+        label="임신 여부",
+        kind=CriterionKind.DERIVED_BOOLEAN,
         trial_id="TRIAL-1",
         criteria_version="v1",
     )
@@ -237,7 +153,7 @@ def test_evidence_gathering_agent_reaches_bedrock_through_gateway() -> None:
                 rule=rule,
                 needs_graph=False,
                 needs_narrative=True,
-                narrative_terms=("HbA1c",),
+                narrative_terms=("임신 중",),
                 graph_fields=(),
             )
         ]
@@ -257,32 +173,21 @@ def test_evidence_gathering_agent_reaches_bedrock_through_gateway() -> None:
                     ToolUse(
                         "tu-rag",
                         "evidence_retrieval_tool",
-                        {"terms": ["HbA1c"], "top_k": 3},
+                        {"terms": ["임신 중"], "top_k": 3},
                     ),
                 ),
                 stop_reason="tool_use",
             )
 
     model = OneToolCall()
-    agent = EvidenceGatheringAgent(
-        model=model,
-        gateway=gateway,
-        trace=trace,
-        max_iterations=2,
-    )
-    context = _context(pseudonymize_patient_id(12345, SECRET))
-
-    result = agent.gather(
-        context,
-        plan,
-        known_narratives={},
-        known_observations={},
+    result = EvidenceGatheringAgent(
+        model=model, gateway=gateway, trace=trace, max_iterations=2
+    ).gather(
+        _context(), plan, known_narratives={}, known_observations={}
     )
 
     assert result.stopped_reason == "gathered_all"
-    assert result.tool_calls == ["evidence_retrieval_tool"]
-    assert result.narratives["T-C01"][0].note_id == "evt_abc123"
-    assert len(client.calls) == 1
+    assert result.narratives["T-C01"][0].note_id == "trial-notice:TRIAL-1"
     prompt_text = model.messages[0]["content"][0]["text"]
-    assert context.patient_key in prompt_text
-    assert '"person_id"' not in prompt_text
+    assert "patient_key" not in prompt_text
+    assert "person_id" not in prompt_text

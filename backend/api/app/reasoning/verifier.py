@@ -23,6 +23,7 @@ _PATIENT_REPORTED_CONFIDENCE = 0.5
 """
 _NARRATIVE_MIN_SCORE = 0.34
 _ASSERTION_MIN_SCORE = 0.5
+_APPLICATION_CONFIDENCE = 0.8
 """자유서술이 조건을 '주장'한다고 볼 최소 일치도.
 
 측정값 나열처럼 단어만 스친 문장이 충돌로 오판되지 않게 막는 문턱이다.
@@ -107,6 +108,23 @@ class LocalEvidenceVerifier:
                 notes=tuple(notes),
             )
 
+        # 완성 지원서 JSON은 이 서비스의 사전 매칭에서 사용하는 명시적 사실
+        # 입력이다. 의료기록 확인을 의미하지는 않지만, 사용자가 선택한 공고와의
+        # 규칙 비교는 결정론적으로 확정할 수 있다.
+        if observation.source == "APPLICATION":
+            notes.append("완성 지원서에 사용자가 직접 기재한 값입니다.")
+            return Verification(
+                criterion_id=rule.criterion_id,
+                proposed_status=(
+                    CriterionStatus.EVIDENCE_FOUND
+                    if outcome.satisfied
+                    else CriterionStatus.CONTRADICTED
+                ),
+                confidence=_APPLICATION_CONFIDENCE,
+                grounded=grounded,
+                notes=tuple(notes),
+            )
+
         confidence = 0.9 if grounded else 0.5
 
         # 파생 불리언은 구조화 값과 자유서술이 어긋나는지 대조한다
@@ -154,6 +172,22 @@ class LocalEvidenceVerifier:
         self, bundle: EvidenceBundle, notes: list[str]
     ) -> Verification:
         """구조화 값이 없고 자유서술만 있는 경우."""
+        reference_only = all(
+            item.document_type in {"trial_notice", "standard_document"}
+            for item in bundle.narrative
+        )
+        if reference_only:
+            return Verification(
+                criterion_id=bundle.rule.criterion_id,
+                proposed_status=CriterionStatus.UNKNOWN,
+                confidence=0.0,
+                grounded=True,
+                notes=(
+                    *notes,
+                    "공고·표준문서는 확인했지만 지원서에서 해당 사실값을 확인할 수 없습니다.",
+                ),
+            )
+
         best = max(bundle.narrative, key=lambda item: item.score)
         if best.score < _NARRATIVE_MIN_SCORE:
             return Verification(
@@ -181,7 +215,8 @@ class LocalEvidenceVerifier:
         assertive = [
             item
             for item in bundle.narrative
-            if item.score >= _ASSERTION_MIN_SCORE
+            if item.document_type == "patient_evidence"
+            and item.score >= _ASSERTION_MIN_SCORE
         ]
         if not assertive:
             return None

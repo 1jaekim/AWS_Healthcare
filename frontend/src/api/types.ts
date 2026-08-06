@@ -114,7 +114,7 @@ export interface TrialDetail extends TrialSummary {
   criteria: TrialCriterion[]
 }
 
-export type TrialReviewStatus = 'pending_review' | 'approved' | 'rejected'
+export type TrialReviewStatus = 'pending_review' | 'approved' | 'rejected' | 'NEEDS_FIX'
 
 export interface TrialReviewItem {
   trial_id: string
@@ -131,6 +131,8 @@ export interface TrialReviewItem {
   reviewed_at: number | null
   reviewed_by: string | null
   review_note: string | null
+  failure_reason: string | null
+  quality_report: Record<string, unknown>
 }
 
 export interface NarrativeEvidenceItem {
@@ -171,7 +173,7 @@ export interface PacketUncertainty {
 
 export interface EvidencePacket {
   run_id: string
-  person_id: number
+  person_id: number | null
   trial_id: string
   criteria_version: string
   index_encounter_id: string
@@ -224,7 +226,8 @@ export type Decision = 'OK' | 'NOT_OK' | 'UNKNOWN'
 
 export interface ScreeningRun {
   run_id: string
-  person_id: number
+  person_id: number | null
+  application_id?: string | null
   trial_id: string
   criteria_version: string
   index_encounter_id: string
@@ -434,7 +437,8 @@ export interface RecommendationLimits {
 
 export interface RecommendationRun {
   recommendation_id: string
-  person_id: number
+  person_id: number | null
+  application_id?: string | null
   evaluated_trials: number
   recommended_trials: RecommendedTrial[]
   excluded_trials: RecommendedTrial[]

@@ -76,7 +76,6 @@ class ScreeningOrchestrator:
         judge: Any | None = None,
         judgment_verifier: JudgmentVerifier | None = None,
         rule_aggregator: RuleAggregator | None = None,
-        patient_key_resolver: Any | None = None,
         mode: str = "deterministic",
     ) -> None:
         self._gatherer = gatherer
@@ -86,7 +85,6 @@ class ScreeningOrchestrator:
         self._judge = judge
         self._judgment_verifier = judgment_verifier or JudgmentVerifier()
         self._rule_aggregator = rule_aggregator or RuleAggregator()
-        self._patient_key_resolver = patient_key_resolver
         self._mode = mode
         self._gateway = gateway
         self._criteria_tool = criteria_tool
@@ -105,25 +103,31 @@ class ScreeningOrchestrator:
     def run(
         self,
         *,
-        person_id: int,
+        person_id: int | None = None,
         trial_id: str,
         actor: str = "system",
         supplements: dict[str, Observation] | None = None,
-        allow_profile_only: bool = False,
+        application_id: str | None = None,
+        owner_sub: str | None = None,
     ) -> ScreeningOutput:
         """스크리닝 한 건을 실행한다.
 
         `supplements` 는 참여자 답변에서 승격된 관찰값이다. 그래프에 값이 없는
         필드만 채운다. 기록으로 확인된 값을 덮어쓰지 않는다.
         """
-        index_row = self._timeline_tool.index_encounter(person_id)
-        if index_row is None:
-            if not allow_profile_only or not supplements:
-                raise PatientNotFound(f"환자 타임라인을 찾을 수 없습니다: {person_id}")
+        if application_id:
+            if not supplements:
+                raise PatientNotFound("완성 지원서 판정값이 없습니다.")
             index_row = {
-                "encounter_id": f"APPLICATION-{person_id}",
+                "encounter_id": f"APPLICATION-{application_id}",
                 "encounter_date": datetime.now(UTC).date().isoformat(),
             }
+        else:
+            if person_id is None:
+                raise PatientNotFound("person_id 또는 application_id가 필요합니다.")
+            index_row = self._timeline_tool.index_encounter(person_id)
+            if index_row is None:
+                raise PatientNotFound(f"환자 타임라인을 찾을 수 없습니다: {person_id}")
 
         run_id = self._runs.new_run_id()
         context = ToolContext(
@@ -132,11 +136,6 @@ class ScreeningOrchestrator:
             trial_id=trial_id,
             index_encounter_id=index_row["encounter_id"],
             index_date=index_row["encounter_date"],
-            patient_key=(
-                self._patient_key_resolver(person_id)
-                if self._patient_key_resolver is not None
-                else None
-            ),
         )
 
         self._audit.record(
@@ -164,7 +163,9 @@ class ScreeningOrchestrator:
             )
 
             plan = self._router.plan(rules)
-            observations = self._collect_observations(context, plan)
+            observations = (
+                {} if application_id else self._collect_observations(context, plan)
+            )
             # Agent 모드에서는 EvidenceGatheringAgent가 RAG Tool 호출을 계획한다.
             # 결정론적 모드만 Runtime이 직접 조회한다.
             narratives = (
@@ -206,6 +207,8 @@ class ScreeningOrchestrator:
                 "deliberation": deliberation,
                 "supplements": applied,
                 "judgment": self._judgment_summary(decisions),
+                "application_id": application_id,
+                "owner_sub": owner_sub,
             },
         )
 

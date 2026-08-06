@@ -10,8 +10,10 @@ import sys
 from pathlib import Path
 
 API_ROOT = Path(__file__).resolve().parent
+BACKEND_ROOT = API_ROOT.parent
 REPO_ROOT = API_ROOT.parents[1]
 
-for path in (str(REPO_ROOT), str(API_ROOT)):
-    if path not in sys.path:
-        sys.path.insert(0, path)
+for path in (str(REPO_ROOT), str(BACKEND_ROOT), str(API_ROOT)):
+    if path in sys.path:
+        sys.path.remove(path)
+    sys.path.insert(0, path)

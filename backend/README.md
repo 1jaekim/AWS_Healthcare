@@ -3,6 +3,11 @@
 임상시험 매칭 플랫폼의 백엔드입니다.  
 **데이터 파이프라인**(전처리·검색·그래프)과 **스크리닝 API**(환자↔임상시험 매칭)로 구성됩니다.
 
+> **마이그레이션 안내:** 최종 제품은 외부 EHR/EMR과 기존 환자 데이터셋을 사용하지
+> 않고, 지원서 완료 JSON과 승인된 공고 기준으로 판정합니다. 아래 환자 문서·EMR
+> GraphRAG 파이프라인은 현재 배포에 남은 레거시 구조입니다. 목표 구조는
+> [../doc/ARCHITECTURE_V2.md](../doc/ARCHITECTURE_V2.md)를 따릅니다.
+
 ## 전체 아키텍처
 
 ```
@@ -85,17 +90,22 @@ backend/
 
 | Lambda | 역할 | 입력 → 출력 |
 |--------|------|-------------|
-| Sanitizer | PHI 마스킹 + HMAC 비식별 키 + 환자별 문서 집계 | `raw/clinical_notes.jsonl` → `rag/patients/*.md` + metadata |
-| Protocol Parser | 공고 구조화 | `trials/*.pdf` → DynamoDB Criteria Store |
+| Sanitizer | 레거시 임상 데이터 정제(GraphRAG 미연결) | `raw/clinical_notes.jsonl` → 서울 정제 산출물 |
+| Protocol Parser | 공고 구조화 + 공개 RAG 문서 발행 | `trials/*` → Criteria Store + `rag/references/*` |
 
 GraphRAG 검색은 FastAPI의 `api/app/tools/evidence_retrieval.py`가 Bedrock KB
 Retrieve API를 직접 호출한다.
 
 ### Step Functions 워크플로우
 
-**EMR Pipeline:**
+**EMR Pipeline (레거시):**
 ```
-Sanitizer → Bedrock GraphRAG ingestion → (상태 폴링) → 완료
+Sanitizer → 완료
+```
+
+**Trials Pipeline:**
+```
+Protocol Parser → 공개문서 발행 → GraphRAG ingestion → 검토 알림
 ```
 
 **Trials Pipeline:**
@@ -170,8 +180,10 @@ FM은 적격성을 결정하지 않습니다. 동일 입력 → 동일 판정 �
 cd backend
 pip install -r requirements.txt
 export ALERT_EMAIL="your-email@example.com"
-cdk bootstrap    # 최초 1회
-cdk deploy --all
+cdk bootstrap aws://<account-id>/ap-northeast-2    # 최초 1회 (서울은 이미 완료)
+cdk deploy HealthcareS3Stack HealthcareObservabilityStack HealthcareMainStack \
+  HealthcareAuthStack HealthcareGuardrailStack HealthcareFrontendStack \
+  HealthcareApiStack
 ```
 
 ### API 로컬 실행
@@ -198,15 +210,17 @@ pytest tests -q
 | 경로 | 용도 | 보안 |
 |------|------|------|
 | `raw/` | 원본 데이터 보존 | KMS 암호화, 90일 후 Glacier |
-| `rag/patients/` | 환자별 비식별 Markdown + metadata | KMS 암호화 |
+| `rag/references/` | 공개 공고·표준문서 Markdown + metadata(버지니아 전용 버킷) | KMS 암호화 |
 | `trials/` | 임상시험 공고 원문 | KMS 암호화 |
 
 ## 배포 스택 순서
 
 1. `HealthcareS3Stack` - S3 데이터 레이크
-2. `HealthcareBedrockStack` - Bedrock KB GraphRAG + Neptune Analytics
+2. `HealthcareGraphRagStack` - 선택적 Bedrock KB GraphRAG + Neptune Analytics
 3. `HealthcareObservabilityStack` - 모니터링
 4. `HealthcareMainStack` - Lambda, DynamoDB, Step Functions
+5. `HealthcareA2AStack` - 서울의 독립 Reviewer·Challenger Lambda. 기본 활성화이며 `-c a2a_enabled=false`로만 비활성화
+6. `HealthcareApiStack` - Matching API Lambda. 운영 배포에서는 A2A URL 없이 실행
 
 ## 담당 구분
 

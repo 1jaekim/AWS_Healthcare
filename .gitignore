@@ -31,6 +31,17 @@ node_modules/
 # 로그
 *.log
 
+# 로컬 진단·평가 실행 산출물
+/.tmp-*.py
+/ocr-compare.txt
+/backend/.*.txt
+/backend/adv-result*.json
+/backend/base-tg-*.json
+/backend/new-tg-*.json
+/backend/rep-*.json
+/backend/v2-*.json
+/backend/cdk-outputs-*.json
+
 # 대용량 데이터 / 생성 산출물 (레포에 커밋하지 않음)
 outputs/
 synthea-data/

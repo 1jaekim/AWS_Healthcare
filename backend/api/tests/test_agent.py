@@ -782,7 +782,7 @@ def test_agent_model_spans_recorded() -> None:
     model_spans = [s for s in spans if s["kind"] == "MODEL"]
     assert model_spans, "MODEL 스팬이 기록되지 않았습니다."
     names = {s["name"] for s in model_spans}
-    assert "model:criterion_judge" in names
+    assert "model:criterion_judge_batch" in names
     assert "model:nli_verifier" not in names
     assert "model:explanation" in names
 
@@ -800,6 +800,7 @@ def test_architecture_endpoint_reports_agent_status() -> None:
             "tool": "evidence_retrieval_tool",
             "mode": "local_keyword",
             "patient_key_filter_required": False,
+            "scope": "public_trial_and_standard_references",
         }
         assert set(body["agent"]["exposed_tools"]) == {
             "evidence_retrieval_tool",

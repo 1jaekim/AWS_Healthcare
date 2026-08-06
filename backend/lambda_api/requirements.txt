@@ -8,3 +8,6 @@ fastapi>=0.115,<1
 mangum>=0.19,<1
 boto3>=1.35,<2
 PyJWT[crypto]>=2.9,<3
+a2a-sdk[fastapi]>=1.1,<2
+# Required by the Starlette version resolved in Linux Lambda asset builds.
+culsans>=0.11,<1

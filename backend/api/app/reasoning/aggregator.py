@@ -74,7 +74,8 @@ class DeterministicAggregator:
             conflicts=verification.conflicts,
             rule_satisfied=outcome.satisfied if outcome else None,
             patient_reported=bool(
-                observation is not None and observation.source == "PATIENT_REPORTED"
+                observation is not None
+                and observation.source in {"PATIENT_REPORTED", "APPLICATION"}
             ),
         )
 

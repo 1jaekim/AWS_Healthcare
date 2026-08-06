@@ -66,6 +66,21 @@ class Conversation:
     def user_text(self, text: str) -> None:
         self.messages.append({"role": "user", "content": [{"text": text}]})
 
+    def user_blocks(self, blocks: list[dict[str, Any]]) -> None:
+        """미리 만든 content 블록을 그대로 보낸다.
+
+        `guardContent` 블록을 섞어 보낼 때 쓴다. Guardrail 은 `guardrailConfig`
+        만 주면 프롬프트 전체를 평가하고, `guardContent` 블록이 하나라도 있으면
+        그 블록만 평가한다. 판정 호출에서는 기준 JSON·지시문까지 평가되면
+        임상 서술이 오탐으로 막히므로, 검사 대상을 좁히는 데 쓴다.
+        """
+        self.messages.append({"role": "user", "content": list(blocks)})
+
+    @staticmethod
+    def guarded(text: str) -> dict[str, Any]:
+        """Guardrail 평가 대상으로 표시한 텍스트 블록."""
+        return {"guardContent": {"text": {"text": text}}}
+
     def assistant_raw(self, content: list[dict[str, Any]]) -> None:
         self.messages.append({"role": "assistant", "content": content})
 
@@ -175,7 +190,7 @@ class BedrockModelClient:
     ) -> ModelResponse:
         request: dict[str, Any] = {
             "modelId": self._model_id,
-            "messages": conversation.messages,
+            "messages": self._normalize(conversation.messages),
             "system": [{"text": system}],
             "inferenceConfig": {
                 "maxTokens": self._max_tokens,
@@ -196,6 +211,30 @@ class BedrockModelClient:
             raise ModelError(f"Bedrock 호출 실패: {exc}") from exc
 
         return self._parse(raw, conversation)
+
+    def _normalize(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Guardrail 이 없으면 `guardContent` 블록을 평문으로 되돌린다.
+
+        Bedrock 은 `guardContent` 가 있는데 `guardrailConfig` 가 없으면 요청을
+        거부한다. 호출부가 검사 범위를 표시했는지와 Guardrail 설정 여부는 서로
+        다른 관심사인데, 그대로 두면 Guardrail 을 끄는 순간 모든 판정이 죽는다.
+        여기서 흡수해 호출부가 그 조합을 신경 쓰지 않게 한다.
+        """
+        if self._guardrail_id:
+            return messages
+        normalized: list[dict[str, Any]] = []
+        for message in messages:
+            blocks: list[dict[str, Any]] = []
+            for block in message.get("content", []) or []:
+                guarded = block.get("guardContent") if isinstance(block, dict) else None
+                if guarded is None:
+                    blocks.append(block)
+                    continue
+                text = str((guarded.get("text") or {}).get("text") or "").strip()
+                if text:
+                    blocks.append({"text": text})
+            normalized.append({**message, "content": blocks or [{"text": ""}]})
+        return normalized
 
     @staticmethod
     def _parse(raw: dict[str, Any], conversation: Conversation) -> ModelResponse:

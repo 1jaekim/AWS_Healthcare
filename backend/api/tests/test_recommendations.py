@@ -4,16 +4,32 @@ from __future__ import annotations
 
 import threading
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from app.actions.recommendation import TrialRanker
+from app.auth import Principal, current_principal
+from app.config import settings
 from app.domain.models import CriterionResult
 from app.domain.states import CriterionKind, CriterionStatus
 from app.main import app
 from app.orchestration.recommendation import RecommendationOrchestrator
 from app.schemas import RecommendationRunResponse
+
+
+@contextmanager
+def _authenticated_patient(person_id: int):
+    """Bind the legacy synthetic-patient tests to an authenticated subject."""
+    app.dependency_overrides[current_principal] = lambda: Principal(
+        subject=f"test-patient-{person_id}",
+        person_id=person_id,
+    )
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(current_principal, None)
 
 
 def _criterion(
@@ -184,14 +200,15 @@ def test_recommendation_api_runs_candidates_and_persists_result() -> None:
         person_id = client.get("/api/v1/patients?limit=1").json()["items"][0][
             "person_id"
         ]
-        response = client.post(
-            "/api/v1/recommendations/run",
-            json={
-                "person_id": person_id,
-                "trial_ids": [item["trial_id"] for item in trials],
-                "top_k": 2,
-            },
-        )
+        with _authenticated_patient(person_id):
+            response = client.post(
+                "/api/v1/recommendations/run",
+                json={
+                    "person_id": person_id,
+                    "trial_ids": [item["trial_id"] for item in trials],
+                    "top_k": 2,
+                },
+            )
 
         assert response.status_code == 200
         body = response.json()
@@ -202,7 +219,9 @@ def test_recommendation_api_runs_candidates_and_persists_result() -> None:
             "top_k": 2,
             "a2a_max_rounds": 2,
             "a2a_max_criteria_per_trial": 5,
-            "recommendation_max_workers": len(trials),
+            "recommendation_max_workers": min(
+                settings.model.recommendation_max_workers, len(trials)
+            ),
         }
         assert [item["rank"] for item in body["recommended_trials"]] == list(
             range(1, len(body["recommended_trials"]) + 1)
@@ -235,10 +254,11 @@ def test_recommendation_api_rejects_unknown_trial() -> None:
         person_id = client.get("/api/v1/patients?limit=1").json()["items"][0][
             "person_id"
         ]
-        response = client.post(
-            "/api/v1/recommendations/run",
-            json={"person_id": person_id, "trial_ids": ["MISSING"]},
-        )
+        with _authenticated_patient(person_id):
+            response = client.post(
+                "/api/v1/recommendations/run",
+                json={"person_id": person_id, "trial_ids": ["MISSING"]},
+            )
 
         assert response.status_code == 404
         assert response.json()["detail"]["trial_ids"] == ["MISSING"]

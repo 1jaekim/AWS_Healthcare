@@ -35,13 +35,8 @@ RAG_PREFIX = os.environ.get("S3_PREFIX_RAG", "rag/")
 PSEUDONYM_SECRET_ARN = os.environ.get("PATIENT_PSEUDONYM_SECRET_ARN", "")
 
 # ─── GraphRAG 출력 대상 ──────────────────────────────────
-# Bedrock Knowledge Bases 가 서울에서 Neptune Analytics 스토리지를 아직 받지
-# 않아 GraphRAG 계층만 us-west-2 에 있다(infra/graphrag_stack.py). 그래서 비식별
-# 문서의 목적지는 원본 버킷과 다르다.
-#
-# 여기서 리전을 넘는 것은 비식별화를 끝낸 문서뿐이다. 원본과 직접 식별자는
-# 아래 build_patient_documents 이전 단계에서 떨어져 나가고 서울 raw/ 에만 남는다.
-# 이 순서가 바뀌면 리전 분리가 곧 개인정보 국외 이전이 된다.
+# 레거시 GraphRAG 리전을 별도로 지정한 경우에만 별도 버킷으로 복사한다.
+# 신규 지원서 중심 워크플로우에서는 이 환자 문서 경로를 사용하지 않는다.
 RAG_BUCKET_NAME = os.environ.get("S3_RAG_BUCKET_NAME") or BUCKET_NAME
 RAG_REGION = os.environ.get("S3_RAG_REGION", "")
 

@@ -9,6 +9,7 @@ const LABEL: Record<TrialReviewStatus, string> = {
   pending_review: '승인 대기',
   approved: '승인됨',
   rejected: '반려됨',
+  NEEDS_FIX: '품질 수정 필요',
 }
 
 function dateTime(epoch: number | null): string {
@@ -114,6 +115,11 @@ export default function AdminTrials() {
                     </table>
                   </div>
                 </details>
+                {item.status === 'NEEDS_FIX' ? (
+                  <div className="callout callout-danger" style={{ marginTop: 16 }}>
+                    RAG에 반영되지 않았습니다. 원인: {item.failure_reason || '품질 검사 실패'}
+                  </div>
+                ) : null}
                 {item.status === 'pending_review' ? (
                   <div style={{ marginTop: 16 }}>
                     {invalid ? <p style={{ color: 'var(--color-danger)', fontSize: 13 }}>제목이 없거나 기준이 3개 미만이라 승인할 수 없습니다. 상세 기준을 다시 수집하세요.</p> : null}

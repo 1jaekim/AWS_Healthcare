@@ -1,5 +1,5 @@
 {
-  "Comment": "임상시험 공고 구조화 파이프라인 - PDF 업로드 → Protocol Parser → DynamoDB",
+  "Comment": "Public trial notice pipeline: parse, publish reference document, ingest GraphRAG, request review",
   "StartAt": "ParseProtocol",
   "States": {
     "ParseProtocol": {
@@ -18,7 +18,11 @@
         "trial_id.$": "$.Payload.trial_id",
         "trial_title.$": "$.Payload.trial_title",
         "inclusion_count.$": "$.Payload.inclusion_count",
-        "exclusion_count.$": "$.Payload.exclusion_count"
+        "exclusion_count.$": "$.Payload.exclusion_count",
+        "review_status.$": "$.Payload.review_status",
+        "failure_reason.$": "$.Payload.failure_reason",
+        "quality_issues.$": "$.Payload.quality_issues",
+        "rag_document_key.$": "$.Payload.rag_document_key"
       },
       "Retry": [
         {
@@ -28,59 +32,154 @@
           "BackoffRate": 2.0
         },
         {
-          "ErrorEquals": ["Lambda.TooManyRequestsException"],
+          "ErrorEquals": ["Lambda.TooManyRequestsException", "States.TaskFailed"],
           "IntervalSeconds": 120,
-          "MaxAttempts": 5,
-          "BackoffRate": 2.0,
-          "Comment": "Bedrock 쓰로틀링 대응"
-        },
-        {
-          "ErrorEquals": ["States.TaskFailed"],
-          "IntervalSeconds": 180,
-          "MaxAttempts": 2,
+          "MaxAttempts": 3,
           "BackoffRate": 2.0
         }
       ],
-      "Catch": [
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "PipelineFailedAlert",
+        "ResultPath": "$.error"
+      }],
+      "Next": "IsProtocolUsable"
+    },
+    "IsProtocolUsable": {
+      "Type": "Choice",
+      "Choices": [
         {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "ParserFailed",
-          "ResultPath": "$.error"
+          "Variable": "$.parser_result.status",
+          "StringEquals": "success",
+          "Next": "StartGraphRagIngestion"
+        },
+        {
+          "Variable": "$.parser_result.status",
+          "StringEquals": "NEEDS_FIX",
+          "Next": "NotifyNeedsFix"
+        },
+        {
+          "Variable": "$.parser_result.status",
+          "StringEquals": "skipped",
+          "Next": "TrialsPipelineSkipped"
         }
       ],
-      "Next": "NotifyReviewNeeded"
+      "Default": "PipelineFailedAlert"
     },
-
+    "NotifyNeedsFix": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::sns:publish",
+      "Parameters": {
+        "TopicArn": "${AlertTopicArn}",
+        "Subject.$": "States.Format('[Healthcare] 공고 품질 수정 필요: {}', $.parser_result.trial_id)",
+        "Message.$": "States.Format('공고 {}는 RAG에 반영하지 않았습니다. 원인: {}', $.parser_result.trial_id, $.parser_result.failure_reason)"
+      },
+      "ResultPath": "$.notification",
+      "Next": "TrialsPipelineNeedsFix"
+    },
+    "StartGraphRagIngestion": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${GraphRagIngestionFunctionArn}",
+        "Payload": {
+          "action": "start",
+          "description.$": "States.Format('Public trial {} GraphRAG sync', $.parser_result.trial_id)"
+        }
+      },
+      "ResultPath": "$.ingestion_start",
+      "ResultSelector": {
+        "ingestion_job_id.$": "$.Payload.ingestion_job_id",
+        "status.$": "$.Payload.status"
+      },
+      "Retry": [{
+        "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException", "States.TaskFailed"],
+        "IntervalSeconds": 30,
+        "MaxAttempts": 5,
+        "BackoffRate": 2.0
+      }],
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "PipelineFailedAlert",
+        "ResultPath": "$.error"
+      }],
+      "Next": "WaitForGraphRagIngestion"
+    },
+    "WaitForGraphRagIngestion": {
+      "Type": "Wait",
+      "Seconds": 30,
+      "Next": "CheckGraphRagIngestion"
+    },
+    "CheckGraphRagIngestion": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "${GraphRagIngestionFunctionArn}",
+        "Payload": {
+          "action": "get",
+          "ingestion_job_id.$": "$.ingestion_start.ingestion_job_id"
+        }
+      },
+      "ResultPath": "$.ingestion_status",
+      "ResultSelector": {
+        "status.$": "$.Payload.status",
+        "failure_reasons.$": "$.Payload.failure_reasons"
+      },
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "PipelineFailedAlert",
+        "ResultPath": "$.error"
+      }],
+      "Next": "IsGraphRagIngestionComplete"
+    },
+    "IsGraphRagIngestionComplete": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.ingestion_status.status",
+          "StringEquals": "COMPLETE",
+          "Next": "NotifyReviewNeeded"
+        },
+        {
+          "Variable": "$.ingestion_status.status",
+          "StringEquals": "FAILED",
+          "Next": "PipelineFailedAlert"
+        },
+        {
+          "Variable": "$.ingestion_status.status",
+          "StringEquals": "STOPPED",
+          "Next": "PipelineFailedAlert"
+        }
+      ],
+      "Default": "WaitForGraphRagIngestion"
+    },
     "NotifyReviewNeeded": {
       "Type": "Task",
       "Resource": "arn:aws:states:::sns:publish",
       "Parameters": {
         "TopicArn": "${AlertTopicArn}",
-        "Subject.$": "States.Format('[Healthcare] 기준 검토 필요: {}', $.parser_result.trial_id)",
-        "Message.$": "States.Format('임상시험 공고 구조화 완료.\n\nTrial ID: {}\n제목: {}\n선정기준: {}건\n제외기준: {}건\n\n검토 후 승인해주세요.', $.parser_result.trial_id, $.parser_result.trial_title, $.parser_result.inclusion_count, $.parser_result.exclusion_count)"
+        "Subject.$": "States.Format('[Healthcare] Trial criteria review required: {}', $.parser_result.trial_id)",
+        "Message.$": "States.Format('Trial {} ({}) parsed and indexed. Inclusion: {}, Exclusion: {}', $.parser_result.trial_id, $.parser_result.trial_title, $.parser_result.inclusion_count, $.parser_result.exclusion_count)"
       },
       "ResultPath": "$.notification",
       "Next": "TrialsPipelineSuccess"
     },
-
-    "TrialsPipelineSuccess": {
-      "Type": "Succeed"
-    },
-
-    "ParserFailed": {
+    "TrialsPipelineSuccess": {"Type": "Succeed"},
+    "TrialsPipelineNeedsFix": {"Type": "Succeed"},
+    "TrialsPipelineSkipped": {"Type": "Succeed"},
+    "PipelineFailedAlert": {
       "Type": "Task",
       "Resource": "arn:aws:states:::sns:publish",
       "Parameters": {
         "TopicArn": "${AlertTopicArn}",
-        "Subject": "[Healthcare Pipeline] 공고 구조화 실패",
-        "Message.$": "States.Format('Protocol Parser 실패.\nSource: {}\nError: {}', $.detail.object.key, $.error.Cause)"
+        "Subject": "[Healthcare Pipeline] Trial reference pipeline failed",
+        "Message.$": "States.Format('Trial reference pipeline failed: {}', States.JsonToString($))"
       },
       "Next": "TrialsPipelineFailed"
     },
-
     "TrialsPipelineFailed": {
       "Type": "Fail",
-      "Cause": "공고 구조화 파이프라인 처리 중 오류 발생",
+      "Cause": "Trial reference parsing or GraphRAG ingestion failed",
       "Error": "TrialsPipelineError"
     }
   }

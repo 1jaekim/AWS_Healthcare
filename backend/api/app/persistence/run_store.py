@@ -64,7 +64,7 @@ class RunStore:
         self._runs: dict[str, ScreeningRun] = {}
         self._artifacts: dict[str, RunArtifacts] = {}
         self._answers: dict[str, list[Answer]] = {}
-        self._latest: dict[tuple[int, str], str] = {}
+        self._latest: dict[tuple[int | None, str], str] = {}
         self._recommendations: dict[str, dict[str, Any]] = {}
 
     @staticmethod

@@ -40,7 +40,7 @@ class EvidencePacket:
     """실행 한 건의 근거 패킷."""
 
     run_id: str
-    person_id: int
+    person_id: int | None
     trial_id: str
     criteria_version: str
     index_encounter_id: str
@@ -60,7 +60,7 @@ class EvidencePacketBuilder:
         self,
         *,
         run_id: str,
-        person_id: int,
+        person_id: int | None,
         trial_id: str,
         criteria_version: str,
         index_encounter_id: str,

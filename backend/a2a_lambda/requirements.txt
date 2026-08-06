@@ -1,0 +1,7 @@
+fastapi>=0.115,<1
+mangum>=0.19,<1
+boto3>=1.35,<2
+a2a-sdk[fastapi]>=1.1,<2
+# Starlette 1.4 imports this queue package at runtime, but the current
+# dependency metadata does not pull it into Lambda target builds.
+culsans>=0.11,<1

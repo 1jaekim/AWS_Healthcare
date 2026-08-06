@@ -22,6 +22,24 @@ _OPEN_STATUSES = frozenset(
     }
 )
 _RECOMMENDATIONS = frozenset({"OK", "NOT_OK", "UNKNOWN"})
+
+
+def _evidence_text(criteria: list[dict[str, Any]]) -> str:
+    """Guardrail 이 검사할 외부 유입 텍스트만 모은다.
+
+    환자 근거 서술과 관찰값이 외부 입력이다. 블록이 비면 Bedrock 이 요청을
+    거부하므로 비어 있을 때는 자리표시자를 넣는다.
+    """
+    parts: list[str] = []
+    for item in criteria:
+        for narrative in item.get("narratives") or []:
+            text = str(narrative.get("text") or "").strip()
+            if text:
+                parts.append(text)
+        observed = item.get("observed_value")
+        if observed not in (None, ""):
+            parts.append(str(observed))
+    return "\n".join(parts) if parts else "(근거 서술 없음)"
 _MAX_ROUNDS = 2
 _MAX_CRITERIA = 5
 
@@ -170,7 +188,14 @@ class UnknownDeliberationAgent:
         if prior is not None:
             request["prior_review"] = list(prior.values())
         conversation = Conversation()
-        conversation.user_text(json.dumps(request, ensure_ascii=False))
+        # Guardrail 검사 범위를 외부 유입 텍스트로 좁힌다. 기준 JSON 과 역할
+        # 지시문까지 평가되면 임상 서술이 오탐으로 막혀 판정이 사라진다.
+        conversation.user_blocks(
+            [
+                {"text": json.dumps(request, ensure_ascii=False)},
+                Conversation.guarded(_evidence_text(criteria)),
+            ]
+        )
 
         try:
             with self._trace.span(

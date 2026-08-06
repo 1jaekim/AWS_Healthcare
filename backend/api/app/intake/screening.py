@@ -35,7 +35,7 @@ class ApplicationSupplementSet:
 
 
 class ApplicationSupplementBuilder:
-    """스키마 필드를 환자 진술 근거로 변환한다.
+    """스키마 필드를 지원서 판정 사실로 변환한다.
 
     `x-criterion-field`가 있으면 그 값을 기준 필드로 사용하고, 없으면 JSON
     프로퍼티 이름을 사용한다. 배열은 단일 규칙값으로 안전하게 해석할 수 없으므로
@@ -64,7 +64,7 @@ class ApplicationSupplementBuilder:
                 value=value,
                 unit=(str(spec["x-unit"]) if spec.get("x-unit") else None),
                 observed_at=application.get("updated_at"),
-                source="PATIENT_REPORTED",
+                source="APPLICATION",
                 source_id=f"{application['application_id']}:{name}",
                 detail=f"지원서 구조화 필드: {spec.get('title', name)}",
             )

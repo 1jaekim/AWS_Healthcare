@@ -21,13 +21,14 @@ BUILD_DIR="$BACKEND/build/api_lambda"
 
 PYTHON_VERSION="3.12"
 PLATFORM="manylinux2014_x86_64"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
 echo "==> 이전 산출물 정리"
 rm -rf "$BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 
 echo "==> 의존성 설치 (${PLATFORM}, py${PYTHON_VERSION})"
-python3 -m pip install \
+"$PYTHON_BIN" -m pip install \
   --quiet \
   --requirement "$BACKEND/lambda_api/requirements.txt" \
   --target "$BUILD_DIR" \
@@ -42,13 +43,14 @@ echo "==> 애플리케이션 코드 복사"
 # 루트가 각각 담당하던 import 경로를 Lambda 에서는 /var/task 하나가 겸한다.
 cp -R "$BACKEND/api/app" "$BUILD_DIR/app"
 cp -R "$REPO_ROOT/agent" "$BUILD_DIR/agent"
+cp -R "$BACKEND/a2a_agents" "$BUILD_DIR/a2a_agents"
 cp "$BACKEND/lambda_api/lambda_handler.py" "$BUILD_DIR/lambda_handler.py"
 
 echo "==> 시드 데이터셋 생성"
 # DatasetRepository 는 기동 시점에 CSV 7종을 읽는다. 없으면 FileNotFoundError 로
 # 콜드 스타트가 통째로 죽는다. 실제 데이터셋은 레포 밖에서 공유되므로 배포
 # 패키지에는 스키마만 같은 시드를 넣는다.
-python3 "$BACKEND/scripts/generate_seed_dataset.py" "$BUILD_DIR/dataset"
+"$PYTHON_BIN" "$BACKEND/scripts/generate_seed_dataset.py" "$BUILD_DIR/dataset"
 
 echo "==> 불필요한 파일 제거"
 # 캐시와 테스트만 지운다. 패키지 크기는 콜드 스타트 시간에 반영되지만,

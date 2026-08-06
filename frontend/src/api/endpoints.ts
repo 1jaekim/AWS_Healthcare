@@ -158,16 +158,13 @@ export const api = {
           `/api/v1/applications/${encodeURIComponent(applicationId)}`,
         ),
 
-  /** 완성 지원서를 환자 기록과 연결해 오케스트레이터를 실행한다. COMPLETE 에서만 된다. */
-  screenApplication: (
-    applicationId: string,
-    personId: number,
-  ): Promise<ScreeningRun> =>
+  /** 완성 지원서 JSON을 직접 오케스트레이터에 전달한다. COMPLETE 에서만 된다. */
+  screenApplication: (applicationId: string): Promise<ScreeningRun> =>
     mock
-      ? mockApi.screenApplication(applicationId, personId)
+      ? mockApi.screenApplication(applicationId)
       : http.post<ScreeningRun>(
           `/api/v1/applications/${encodeURIComponent(applicationId)}/screening`,
-          { person_id: personId, actor: config.actor },
+          { actor: config.actor },
         ),
 
   // -- 추천 -----------------------------------------------------------------
@@ -182,7 +179,7 @@ export const api = {
     mock
       ? mockApi.runRecommendations(personId ?? config.demoPersonId, topK)
       : http.post<RecommendationRun>('/api/v1/recommendations/run', {
-          person_id: personId,
+          ...(applicationId ? {} : { person_id: personId }),
           trial_ids: trialIds ?? null,
           application_id: applicationId ?? null,
           top_k: topK,

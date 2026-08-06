@@ -1,5 +1,10 @@
 # 임상시험 스크리닝 백엔드 v0.3
 
+> **마이그레이션 안내:** 현재 API는 `person_id`와 로컬/시드 환자 데이터를 요구하는
+> 레거시 경로를 포함합니다. 최종 계약은 외부 EHR/EMR 없이 완료 지원서 JSON을 직접
+> 판정하고 Cognito `sub`로 소유권을 확인하는 구조입니다. 관련 전환 순서는
+> [../../doc/ARCHITECTURE_V2.md](../../doc/ARCHITECTURE_V2.md)를 기준으로 합니다.
+
 9계층 스크리닝 오케스트레이터입니다. 기준별로 근거를 수집·검증한 뒤 다섯 가지 상태로
 판정하고, 근거 패킷·확인 질문·대상별 설명을 함께 반환합니다.
 
@@ -284,16 +289,19 @@ POST /api/v1/intake/normalize
 |---|---|---|
 | `BEDROCK_ENABLED` | `false` | 에이전트 모드 활성화 |
 | `AWS_REGION` | `ap-northeast-2` | Bedrock 호출 리전 |
+| `KNOWLEDGE_BASE_REGION` | `AWS_REGION` 과 같음 | GraphRAG 는 버지니아이므로 KB 를 켤 때 `us-east-1` 를 명시해야 함 |
 | `BEDROCK_MODEL_ID` | `global.anthropic.claude-sonnet-4-5-20250929-v1:0` | 검증된 Claude Sonnet inference profile |
 | `BEDROCK_MAX_TOKENS` | `1024` | 응답 상한 |
 | `AGENT_MAX_ITERATIONS` | `4` | tool-use 루프 상한 |
 | `CRITERION_JUDGE_ENABLED` | `true` | 기준별 판단 → Verifier → Rule Aggregator 경로 사용 |
 | `A2A_MAX_CRITERIA` | `5` | 2라운드 교차 검토 대상 기준 수 상한 |
+| `A2A_REVIEWER_URL` | 없음 | Evidence Reviewer의 IAM 인증 Function URL |
+| `A2A_CHALLENGER_URL` | 없음 | Challenge Reviewer의 IAM 인증 Function URL |
+| `A2A_REGION` | 실행 리전 | Function URL SigV4 서명 리전 |
+| `A2A_TIMEOUT_SECONDS` | `90` | 에이전트 한 번 호출의 제한 시간 |
 | `RECOMMENDATION_MAX_WORKERS` | `2` | 추천 시 동시에 판정할 공고 수(1~5, `1`은 순차 실행) |
 | `BEDROCK_GUARDRAIL_ID` | 없음 | Bedrock Guardrails 연결 |
 | `KNOWLEDGE_BASE_ID` | 없음 | 설정하면 `evidence_retrieval_tool`이 Bedrock GraphRAG Retrieve 사용 |
-| `PATIENT_PSEUDONYM_SECRET` | 없음 | 로컬 개발용 HMAC 키 |
-| `PATIENT_PSEUDONYM_SECRET_ARN` | 없음 | 운영 환경 Secrets Manager HMAC 키 ARN |
 
 `temperature` 는 0으로 고정되어 있습니다.
 
@@ -314,9 +322,9 @@ backend/.venv/bin/python -m uvicorn app.main:app --app-dir backend/api \
 
 `KNOWLEDGE_BASE_ID`를 설정하면 `EvidenceGatheringAgent`의
 `evidence_retrieval_tool` 호출이 Bedrock Knowledge Base `Retrieve`로 연결됩니다.
-이 모드에서는 HMAC 키 설정이 반드시 필요하며 모든 요청에 비식별 `patient_key`와
-`document_type=patient_evidence` 필터를 강제합니다. 설정이 빠지면 로컬 검색으로
-조용히 폴백하지 않고 컨테이너 구성을 실패시킵니다.
+지원서 JSON은 RAG에 저장하거나 검색 요청에 넣지 않습니다. 모든 Retrieve 요청은 현재
+`trial_id`의 `trial_notice` 또는 전역 `standard_document`만 허용하며, 지원서 JSON은 검색된
+공개 근거와 함께 판정기에 직접 전달됩니다.
 
 ## 판정 상태
 
@@ -439,15 +447,13 @@ A2A 합의는 그라운딩된 경우에만 추천 점수에 반영하며 원래 
 종료된 세션에 답변을 추가하면 `409 Conflict`를 반환합니다.
 
 `POST /api/v1/applications/{application_id}/screening`은 `COMPLETE` 상태에서만 실행됩니다.
-요청의 `person_id`로 기존 임상 기록을 연결하고, 지원서의 스칼라 값을
-`PATIENT_REPORTED` 보충 관찰값으로 변환합니다. 공고별 필드에 `criterion_field`와 `unit`을
+지원서 소유권은 Cognito `sub`로 확인하고 `person_id`나 환자 키는 요구하지 않습니다. 완성
+지원서의 스칼라 값을 `APPLICATION` 관찰값으로 변환합니다. 공고별 필드에 `criterion_field`와 `unit`을
 지정하면 각각 JSON Schema의 `x-criterion-field`, `x-unit`으로 고정되어 오케스트레이터 기준
 필드에 정확히 연결됩니다. 목록 값은 단일 관찰값으로 추측하지 않고 제외 내역에 남깁니다.
 
-오케스트레이터는 기존 환자 기록을 우선하며 지원서 값으로 덮어쓰지 않습니다. 자유서술 근거가
-필요한 기준은 `evidence_retrieval_tool`을 호출합니다. Knowledge Base 설정 환경에서는
-`person_id`를 가명 `patient_key`로 변환한 뒤 환자 격리 필터가 적용된 GraphRAG 검색을 수행하고,
-로컬 환경에서는 동일 계약의 키워드 검색을 사용합니다. 응답의 `supplements`에는 적용·제외
+오케스트레이터는 지원서 JSON을 판정 입력으로 직접 사용합니다. 공고 원문·표준 근거가 필요한
+기준은 `evidence_retrieval_tool`로 공개문서 GraphRAG를 조회합니다. 응답의 `supplements`에는 적용·제외
 필드, `source_application_id`, 실제 `retrieval_mode`가 포함됩니다.
 
 현재 `IntakeStore`는 로컬 개발용 메모리 구현입니다. 공개 메서드 계약을 유지한 채 DynamoDB
@@ -544,7 +550,7 @@ Rule Evaluator는 다른 Tool의 출력을 입력으로 받지만, 직접 호출
   설명은 생성하지 않습니다 (Contextual Grounding).
 - **직접 식별자 검사** (`app/safety/pii.py`) — 모델 판단 출력에 주민번호·연락처·이메일·
   내부 환자번호·호칭이 붙은 이름 형식이 섞이면 그 기준을 사람 검토로 보냅니다.
-  형식이 뚜렷한 유출을 막는 1차 방어선이며, 애초에 LLM 에는 `patient_key` 만 넘깁니다.
+  형식이 뚜렷한 유출을 막는 1차 방어선이며, 공개문서 RAG 요청에는 환자 식별자를 넘기지 않습니다.
 - **감사 로그** — append-only 입니다. 상태가 바뀌면 기존 이벤트를 수정하지 않고 새 이벤트를
   추가합니다. `export_ndjson()` 은 Firehose 페이로드와 동일한 형태입니다.
 - **Observability** — 모든 Agent·Tool·Model 호출이 스팬으로 기록되고 지연시간이 집계됩니다.

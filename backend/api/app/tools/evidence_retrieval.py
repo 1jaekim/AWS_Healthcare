@@ -16,8 +16,8 @@ from .base import Action, BaseTool, DataStore, Permission, ToolContext
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
 _NEGATION_HINTS = ("없", "부인", "아니", "미확인", "해당하지")
-_EVENT_REFERENCE = re.compile(r"이벤트\s*참조\s*:\s*(evt_[a-f0-9]+)", re.IGNORECASE)
 _MAX_TOP_K = 5
+_REFERENCE_DOCUMENT_TYPES = frozenset({"trial_notice", "standard_document"})
 
 
 def _split_sentences(text: str) -> list[str]:
@@ -114,7 +114,11 @@ class EvidenceRetrievalTool(BaseTool):
 
 
 class BedrockKnowledgeBaseEvidenceRetrievalTool(BaseTool):
-    """환자 격리 필터를 강제하는 Bedrock Knowledge Base Retrieve 어댑터."""
+    """공개 공고·표준문서만 조회하는 Bedrock Knowledge Base 어댑터.
+
+    지원서 JSON은 이 도구로 보내지 않는다. ``trial_id``와 허용된 문서 유형만
+    필터에 사용하므로 환자 식별자·가명 키가 검색 요청에 포함되지 않는다.
+    """
 
     name = "evidence_retrieval_tool"
     permissions = (Permission(DataStore.KNOWLEDGE_BASE, Action.READ),)
@@ -139,44 +143,24 @@ class BedrockKnowledgeBaseEvidenceRetrievalTool(BaseTool):
         self, context: ToolContext, /, **kwargs: Any
     ) -> list[NarrativeSnippet]:
         self.assert_allowed(Permission(DataStore.KNOWLEDGE_BASE, Action.READ))
-        if not context.patient_key or not context.patient_key.startswith("pt_"):
-            raise ValueError(
-                "Bedrock patient evidence retrieval requires a pseudonymous patient_key"
-            )
-
         terms = tuple(
             str(term).strip() for term in kwargs.get("terms", ()) if str(term).strip()
         )
         if not terms:
             return []
         top_k = max(1, min(int(kwargs.get("top_k", 3)), _MAX_TOP_K))
-        query = self._query_text(terms)
+        query = self._query_text(context.trial_id, terms)
         response = self._bedrock_client().retrieve(
             knowledgeBaseId=self._knowledge_base_id,
             retrievalQuery={"text": query},
             retrievalConfiguration={
                 "vectorSearchConfiguration": {
                     "numberOfResults": top_k,
-                    "filter": {
-                        "andAll": [
-                            {
-                                "equals": {
-                                    "key": "patient_key",
-                                    "value": context.patient_key,
-                                }
-                            },
-                            {
-                                "equals": {
-                                    "key": "document_type",
-                                    "value": "patient_evidence",
-                                }
-                            },
-                        ]
-                    },
+                    "filter": self._reference_filter(context.trial_id),
                 }
             },
         )
-        return self._snippets(response, terms, top_k, context.patient_key)
+        return self._snippets(response, terms, top_k, context.trial_id)
 
     def _bedrock_client(self) -> Any:
         if self._client is None:
@@ -188,12 +172,43 @@ class BedrockKnowledgeBaseEvidenceRetrievalTool(BaseTool):
         return self._client
 
     @staticmethod
-    def _query_text(terms: tuple[str, ...]) -> str:
+    def _query_text(trial_id: str, terms: tuple[str, ...]) -> str:
         joined = ", ".join(terms)
         return (
-            "다음 임상시험 기준 표현과 직접 관련된 환자 임상 근거를 찾아라. "
-            f"조건: {joined}. 측정값, 부정 표현, 진단 또는 상태 문장을 우선한다."
+            "지원자 정보가 아니라 공개 임상시험 공고와 표준문서에서 기준의 원문과 "
+            f"해석 근거를 찾아라. 공고 ID: {trial_id}. 기준 표현: {joined}. "
+            "선정·제외 조건, 단위, 범위, 예외 문장을 우선한다."
         )
+
+    @staticmethod
+    def _reference_filter(trial_id: str) -> dict[str, Any]:
+        """현재 공고 또는 전역 표준문서만 허용하는 메타데이터 필터."""
+        return {
+            "orAll": [
+                {
+                    "andAll": [
+                        {
+                            "equals": {
+                                "key": "document_type",
+                                "value": "trial_notice",
+                            }
+                        },
+                        {
+                            "equals": {
+                                "key": "trial_id",
+                                "value": trial_id,
+                            }
+                        },
+                    ]
+                },
+                {
+                    "equals": {
+                        "key": "document_type",
+                        "value": "standard_document",
+                    }
+                },
+            ]
+        }
 
     @classmethod
     def _snippets(
@@ -201,21 +216,24 @@ class BedrockKnowledgeBaseEvidenceRetrievalTool(BaseTool):
         response: dict[str, Any],
         terms: tuple[str, ...],
         top_k: int,
-        patient_key: str,
+        trial_id: str,
     ) -> list[NarrativeSnippet]:
         snippets: list[NarrativeSnippet] = []
         for rank, item in enumerate(response.get("retrievalResults", [])[:top_k], start=1):
             metadata = item.get("metadata") or {}
-            if metadata.get("patient_key") != patient_key:
+            document_type = str(metadata.get("document_type") or "")
+            if document_type not in _REFERENCE_DOCUMENT_TYPES:
                 continue
-            if metadata.get("document_type") != "patient_evidence":
+            if (
+                document_type == "trial_notice"
+                and str(metadata.get("trial_id") or "") != trial_id
+            ):
                 continue
             text = str(item.get("content", {}).get("text") or "").strip()
             if not text:
                 continue
-            event_match = _EVENT_REFERENCE.search(text)
             location = cls._location(item.get("location") or {})
-            source_id = event_match.group(1) if event_match else location
+            source_id = str(metadata.get("source_id") or location)
             if not source_id:
                 source_id = f"kb-result-{rank}"
             matched = tuple(term for term in terms if term.casefold() in text.casefold())
@@ -232,6 +250,10 @@ class BedrockKnowledgeBaseEvidenceRetrievalTool(BaseTool):
                     snippet=text[:800],
                     matched_terms=matched or terms,
                     score=round(numeric_score, 3),
+                    document_type=document_type,
+                    source_title=(
+                        str(metadata["title"]) if metadata.get("title") else None
+                    ),
                 )
             )
         return snippets

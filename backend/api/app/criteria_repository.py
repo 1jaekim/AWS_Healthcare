@@ -301,6 +301,16 @@ class DynamoDBCriteriaRepository:
     @staticmethod
     def _review_item(item: dict[str, Any]) -> dict[str, Any]:
         rows = flatten_protocol_item(item)
+        raw_quality = item.get("quality_report")
+        if isinstance(raw_quality, str):
+            try:
+                quality_report = json.loads(raw_quality)
+            except json.JSONDecodeError:
+                quality_report = {}
+        elif isinstance(raw_quality, dict):
+            quality_report = raw_quality
+        else:
+            quality_report = {}
         return {
             "trial_id": str(item.get("trial_id") or ""),
             "source_key": str(item.get("source_key") or ""),
@@ -316,6 +326,8 @@ class DynamoDBCriteriaRepository:
             "reviewed_at": int(item.get("reviewed_at") or 0) or None,
             "reviewed_by": str(item.get("reviewed_by") or "") or None,
             "review_note": str(item.get("review_note") or "") or None,
+            "failure_reason": str(item.get("failure_reason") or "") or None,
+            "quality_report": quality_report,
         }
 
     @staticmethod

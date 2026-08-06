@@ -46,7 +46,6 @@ class ApiStack(Stack):
         construct_id: str,
         criteria_table,
         intake_table,
-        pseudonym_secret,
         user_pool_id: str,
         user_pool_client_id: str,
         knowledge_base_id: str = "",
@@ -54,6 +53,8 @@ class ApiStack(Stack):
         guardrail_id: str = "",
         guardrail_version: str = "",
         cors_origins: str = "",
+        a2a_reviewer_url: str = "",
+        a2a_challenger_url: str = "",
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -85,7 +86,6 @@ class ApiStack(Stack):
             # ─── GraphRAG ────────────────────────────────
             "KNOWLEDGE_BASE_ID": knowledge_base_id,
             "KNOWLEDGE_BASE_REGION": knowledge_base_region,
-            "PATIENT_PSEUDONYM_SECRET_ARN": pseudonym_secret.secret_arn,
             # ─── Guardrail ───────────────────────────────
             "BEDROCK_GUARDRAIL_ID": guardrail_id,
             "BEDROCK_GUARDRAIL_VERSION": guardrail_version,
@@ -94,6 +94,10 @@ class ApiStack(Stack):
             "DYNAMODB_INTAKE_TABLE": intake_table.table_name,
             "CORS_ALLOW_ORIGINS": cors_origins,
             "LOG_LEVEL": "INFO",
+            "A2A_REVIEWER_URL": a2a_reviewer_url,
+            "A2A_CHALLENGER_URL": a2a_challenger_url,
+            "A2A_REGION": Stack.of(self).region,
+            "A2A_TIMEOUT_SECONDS": "90",
         }
 
         self.function = _lambda.Function(
@@ -150,8 +154,7 @@ class ApiStack(Stack):
             )
 
         if knowledge_base_id:
-            # KB 는 us-west-2 에 있다. 이 스택의 리전을 쓰면 존재하지 않는
-            # ARN 이 되어 Retrieve 가 AccessDenied 로 떨어진다.
+            # 명시된 GraphRAG 리전의 KB만 조회할 수 있다.
             self.function.add_to_role_policy(
                 iam.PolicyStatement(
                     actions=["bedrock:Retrieve", "bedrock:RetrieveAndGenerate"],
@@ -167,7 +170,6 @@ class ApiStack(Stack):
         # 그룹을 검증하는 API 계층에서 수행한다.
         criteria_table.grant_read_write_data(self.function)
         intake_table.grant_read_write_data(self.function)
-        pseudonym_secret.grant_read(self.function)
 
         # ─── 공개 진입점 ─────────────────────────────────
         # CORS 는 FastAPI 미들웨어 한 곳에서만 처리한다. Function URL 에도 CORS 를

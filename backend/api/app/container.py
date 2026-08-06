@@ -18,14 +18,16 @@ from .actions.explanation import ExplanationAgent
 from .actions.next_best import NextBestEvidenceAgent
 from .actions.packet import EvidencePacketBuilder
 from agent.intake import IntakeAgent
-from agent.manager import AgentManager, AgentStatus
+from agent.manager import AgentManager, AgentStatus, ManagedAgentInfo
 from agent.model import BedrockModelClient, ModelClient, ModelError
 from .config import (
+    A2ASettings,
     CriteriaStoreSettings,
     GraphRagSettings,
     ModelSettings,
     settings as default_settings,
 )
+from .orchestration.a2a_deliberation import A2ADeliberationAgent, A2AHttpTransport
 from .criteria_repository import DynamoDBCriteriaRepository, LocalTrialCatalog
 from .domain.intake_vocabulary import CatalogFieldResolver
 from .intake import (
@@ -49,7 +51,6 @@ from .reasoning.verifier import LocalEvidenceVerifier
 from .repository import DatasetRepository
 from .safety.guardrails import LocalGuardrail
 from .safety.observability import TraceCollector
-from .safety.pseudonyms import PatientKeyResolver
 from .tools.criteria_tool import CriteriaTool
 from .tools.evidence_retrieval import (
     BedrockKnowledgeBaseEvidenceRetrievalTool,
@@ -114,9 +115,9 @@ def build_container(
     model_client: ModelClient | None = None,
     graphrag_config: GraphRagSettings | None = None,
     retrieval_client: object | None = None,
-    secrets_client: object | None = None,
     criteria_store_config: CriteriaStoreSettings | None = None,
     criteria_table: object | None = None,
+    a2a_config: A2ASettings | None = None,
 ) -> Container:
     """컨테이너를 구성한다.
 
@@ -125,6 +126,11 @@ def build_container(
     config = model_config or default_settings.model
     rag_config = graphrag_config or default_settings.graphrag
     criteria_config = criteria_store_config or default_settings.criteria_store
+    remote_a2a = a2a_config or default_settings.a2a
+    if remote_a2a.partially_configured:
+        raise ValueError(
+            "A2A_REVIEWER_URL and A2A_CHALLENGER_URL must be configured together"
+        )
     repository = DatasetRepository(data_dir)
     trace = TraceCollector()
     guardrail = LocalGuardrail()
@@ -158,17 +164,9 @@ def build_container(
         criteria_source if criteria_config.enabled else LocalTrialCatalog(repository)
     )
     timeline_tool = TimelineGraphTool(repository)
-    patient_key_resolver = None
     if rag_config.enabled:
-        patient_key_resolver = PatientKeyResolver(
-            secret=rag_config.patient_pseudonym_secret,
-            secret_arn=rag_config.patient_pseudonym_secret_arn,
-            region=rag_config.region,
-            secrets_client=secrets_client,
-        )
-        # KB 만 리전이 다를 수 있다. 위의 Secrets Manager 는 이 서비스와 같은
-        # 리전(rag_config.region)을 보고, KB 는 자기 리전을 본다. 한 값으로
-        # 묶으면 둘 중 하나가 반드시 틀린 리전을 보게 된다.
+        # 지원서 사실은 JSON으로 직접 전달한다. KB에는 공개 공고·표준문서만
+        # 있으므로 환자 가명 키나 Secrets Manager 조회가 필요하지 않다.
         retrieval_tool = BedrockKnowledgeBaseEvidenceRetrievalTool(
             knowledge_base_id=str(rag_config.knowledge_base_id),
             region=rag_config.knowledge_base_region,
@@ -203,6 +201,40 @@ def build_container(
         model_factory=_build_model_client,
     ).build()
 
+    if remote_a2a.enabled:
+        agents.deliberator = A2ADeliberationAgent(
+            reviewer_url=str(remote_a2a.reviewer_url),
+            challenger_url=str(remote_a2a.challenger_url),
+            transport=A2AHttpTransport(
+                region=remote_a2a.region,
+                timeout_seconds=remote_a2a.timeout_seconds,
+            ),
+            trace=trace,
+            max_criteria=config.max_deliberation_criteria,
+        )
+        agents.status.enabled = True
+        agents.status.mode = "a2a:lambda"
+        agents.status.managed_agents.extend(
+            [
+                ManagedAgentInfo(
+                    name="a2a_evidence_reviewer",
+                    role="independent evidence review",
+                    enabled=True,
+                    mode="a2a:lambda",
+                    model_backed=True,
+                    source=str(remote_a2a.reviewer_url),
+                ),
+                ManagedAgentInfo(
+                    name="a2a_challenge_reviewer",
+                    role="independent challenge review",
+                    enabled=True,
+                    mode="a2a:lambda",
+                    model_backed=True,
+                    source=str(remote_a2a.challenger_url),
+                ),
+            ]
+        )
+
     orchestrator = ScreeningOrchestrator(
         gateway=gateway,
         criteria_tool=criteria_tool,
@@ -222,7 +254,6 @@ def build_container(
         judge=agents.judge,
         judgment_verifier=JudgmentVerifier(),
         rule_aggregator=RuleAggregator(),
-        patient_key_resolver=patient_key_resolver,
         mode=agents.status.mode,
     )
     recommendation_orchestrator = RecommendationOrchestrator(

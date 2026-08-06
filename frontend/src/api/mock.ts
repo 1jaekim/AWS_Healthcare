@@ -1006,14 +1006,17 @@ export const mockApi = {
       : Promise.reject(new Error('지원서를 찾을 수 없습니다.'))
   },
 
-  screenApplication: (applicationId: string, personId: number) => {
+  screenApplication: (applicationId: string) => {
     const entry = applications.get(applicationId)
     const trialId = entry?.intake.trial_id ?? TRIALS[1].trial.trial_id
     const known = TRIALS.some((candidate) => candidate.trial.trial_id === trialId)
-    const run = buildRun(personId, known ? trialId : TRIALS[1].trial.trial_id)
+    const run = buildRun(1, known ? trialId : TRIALS[1].trial.trial_id)
     return delay(
       {
         ...run,
+        person_id: null,
+        application_id: applicationId,
+        packet: { ...run.packet, person_id: null },
         supplements: {
           applied_fields: Object.keys(entry?.intake.data ?? {}),
           excluded_fields: [],

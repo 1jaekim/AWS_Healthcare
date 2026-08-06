@@ -209,7 +209,7 @@ class PacketUncertainty(BaseModel):
 
 class EvidencePacketOut(BaseModel):
     run_id: str
-    person_id: int
+    person_id: int | None = None
     trial_id: str
     criteria_version: str
     index_encounter_id: str
@@ -263,7 +263,8 @@ class ScreeningRunResponse(BaseModel):
     """POST /screening/run 응답."""
 
     run_id: str
-    person_id: int
+    person_id: int | None = None
+    application_id: str | None = None
     trial_id: str
     criteria_version: str
     index_encounter_id: str
@@ -295,9 +296,9 @@ class ScreeningRunResponse(BaseModel):
 
 
 class RecommendationRunRequest(BaseModel):
-    """환자와 비교할 임상시험 후보군. 없으면 활성 공고 전체를 사용한다."""
+    """지원서 또는 레거시 환자 프로필과 비교할 임상시험 후보군."""
 
-    person_id: int = Field(gt=0)
+    person_id: int | None = Field(default=None, gt=0)
     trial_ids: list[str] | None = Field(default=None, min_length=1, max_length=50)
     application_id: str | None = Field(default=None, min_length=1, max_length=128)
     top_k: int = Field(default=3, ge=1, le=20)
@@ -348,7 +349,8 @@ class RecommendationLimits(BaseModel):
 
 class RecommendationRunResponse(BaseModel):
     recommendation_id: str
-    person_id: int
+    person_id: int | None = None
+    application_id: str | None = None
     evaluated_trials: int
     recommended_trials: list[RecommendedTrialOut]
     excluded_trials: list[RecommendedTrialOut]
@@ -471,7 +473,7 @@ class AnswerResponse(BaseModel):
 class TrialReviewItemOut(BaseModel):
     trial_id: str
     source_key: str
-    status: Literal["pending_review", "approved", "rejected"]
+    status: Literal["pending_review", "approved", "rejected", "NEEDS_FIX"]
     trial_title: str
     condition: str
     phase: str
@@ -483,6 +485,8 @@ class TrialReviewItemOut(BaseModel):
     reviewed_at: int | None = None
     reviewed_by: str | None = None
     review_note: str | None = None
+    failure_reason: str | None = None
+    quality_report: dict[str, Any] = Field(default_factory=dict)
 
 
 class TrialReviewDecisionRequest(BaseModel):
@@ -615,9 +619,8 @@ class ApplicationAdditionalResponse(BaseModel):
 
 
 class ApplicationScreeningRequest(BaseModel):
-    """완성 지원서를 기존 환자 기록과 연결해 오케스트레이터를 실행한다."""
+    """완성 지원서 JSON만으로 오케스트레이터를 실행한다."""
 
-    person_id: int = Field(gt=0)
     actor: str = Field(default="system", min_length=1, max_length=128)
 
 

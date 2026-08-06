@@ -260,7 +260,7 @@
         <mxCell id="ah" value="AWS 배포 현황 · 계정 869515803312 · 2026-08-05 기준" style="text;html=1;align=left;verticalAlign=middle;fontSize=20;fontStyle=1;spacingLeft=4;" vertex="1" parent="1">
           <mxGeometry x="40" y="20" width="800" height="40" as="geometry" />
         </mxCell>
-        <mxCell id="ahb" value="GraphRAG 계층만 us-west-2 다. 서울 Bedrock KB 가 NEPTUNE_ANALYTICS 스토리지 타입을 아직 받지 않아 생긴 제약이다." style="text;html=1;align=left;verticalAlign=middle;fontSize=12;fontColor=#666666;spacingLeft=4;" vertex="1" parent="1">
+        <mxCell id="ahb" value="GraphRAG 계층만 us-east-1 이다. 서울 Bedrock KB 가 NEPTUNE_ANALYTICS 스토리지 타입을 아직 받지 않아 생긴 제약이다." style="text;html=1;align=left;verticalAlign=middle;fontSize=12;fontColor=#666666;spacingLeft=4;" vertex="1" parent="1">
           <mxGeometry x="40" y="55" width="900" height="20" as="geometry" />
         </mxCell>
 
@@ -310,13 +310,13 @@
           <mxGeometry x="215" y="660" width="745" height="130" as="geometry" />
         </mxCell>
 
-        <mxCell id="usw" value="us-west-2" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#9673a6;dashed=1;verticalAlign=top;fontSize=13;fontStyle=1;align=left;spacingLeft=10;spacingTop=6;" vertex="1" parent="1">
+        <mxCell id="usw" value="us-east-1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#9673a6;dashed=1;verticalAlign=top;fontSize=13;fontStyle=1;align=left;spacingLeft=10;spacingTop=6;" vertex="1" parent="1">
           <mxGeometry x="1020" y="110" width="500" height="420" as="geometry" />
         </mxCell>
-        <mxCell id="neptune" value="Neptune Analytics&#10;g-6wg5ngdvv8 · 16 m-NCU&#10;&#10;상시 과금 — 시간당 $0.581&#10;하루 약 $14 · 월 약 $418&#10;중지 불가. 삭제만 가능&#10;데모 끝나면 반드시 지운다" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;strokeWidth=2;" vertex="1" parent="1">
+        <mxCell id="neptune" value="Neptune Analytics&#10;g-auaz36nmm8 · 16 m-NCU&#10;&#10;GraphRAG 전용 · 버지니아 유지" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;strokeWidth=2;" vertex="1" parent="1">
           <mxGeometry x="1045" y="150" width="220" height="130" as="geometry" />
         </mxCell>
-        <mxCell id="kb" value="Bedrock Knowledge Base&#10;JEGPQXQUUG&#10;데이터소스 IYNGIUDBRW&#10;전용 KMS + S3&#10;&#10;색인 비어 있음&#10;→ 자유서술 기준은 판정불가" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;" vertex="1" parent="1">
+        <mxCell id="kb" value="Bedrock Knowledge Base&#10;VZIL9VWWKP&#10;데이터소스 VKQED58WTX&#10;전용 KMS + S3&#10;&#10;합성 검증 문서 1건 색인&#10;검색 연결 확인" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;" vertex="1" parent="1">
           <mxGeometry x="1290" y="150" width="205" height="130" as="geometry" />
         </mxCell>
         <mxCell id="cross" value="리전을 넘어가는 것은 비식별화를 마친 문서뿐이다.&#10;직접 식별자는 sanitizer 이전 단계에서 떨어져 나가고 서울 raw/ 에만 남는다.&#10;sanitizer 순서를 바꾸면 리전 분리가 곧 개인정보 국외 이전이 된다.&#10;&#10;연결 3가지 — S3_RAG_BUCKET_NAME · KNOWLEDGE_BASE_REGION&#10;· Step Functions ARN 의 리전 자리" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;" vertex="1" parent="1">

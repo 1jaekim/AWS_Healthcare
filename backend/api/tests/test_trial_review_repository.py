@@ -97,6 +97,29 @@ def test_pending_notice_can_be_approved_with_audit_fields() -> None:
     assert repository.list_trials()[0]["trial_id"] == "KCT-001"
 
 
+def test_needs_fix_notice_exposes_quality_failure() -> None:
+    item = _item()
+    item.update(
+        status="NEEDS_FIX",
+        failure_reason="NO_ELIGIBILITY_CRITERIA",
+        quality_report='{"passed": false, "issues": ["NO_ELIGIBILITY_CRITERIA"]}',
+        criteria=[],
+    )
+    class NeedsFixTable(FakeTable):
+        def query(self, **kwargs):
+            return {"Items": [deepcopy(self.item)]}
+
+    repository = DynamoDBCriteriaRepository(
+        table_name="test", region="ap-northeast-2", table=NeedsFixTable(item)
+    )
+
+    failed = repository.list_for_review(status="NEEDS_FIX")
+
+    assert failed[0]["status"] == "NEEDS_FIX"
+    assert failed[0]["failure_reason"] == "NO_ELIGIBILITY_CRITERIA"
+    assert failed[0]["quality_report"]["passed"] is False
+
+
 def test_unknown_title_cannot_be_approved() -> None:
     repository = DynamoDBCriteriaRepository(
         table_name="test", region="ap-northeast-2", table=FakeTable(_item(title="UNKNOWN"))

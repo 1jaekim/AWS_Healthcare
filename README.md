@@ -1,13 +1,19 @@
 # AWS Healthcare Clinical Trial Matching
 
-환자 임상정보와 임상시험 모집공고를 연결해 공고별 선정·제외 기준을 평가하고,
+사용자가 직접 작성한 지원서와 임상시험 모집공고를 연결해 공고별 선정·제외 기준을 평가하고,
 추천 결과와 근거, 추가 확인 질문, 감사 기록을 함께 제공하는 AWS 기반 임상시험
 매칭 서비스입니다.
+
+> **최종 데이터 정책:** 병원 EHR/EMR 연동과 기존 환자 데이터셋은 운영 전제로
+> 사용하지 않습니다. 승인된 공고 기준과 사용자가 제출한 지원서·추가 답변이 매칭
+> 입력입니다. 저장소의 `person_id`, 환자 타임라인, EMR 파이프라인, 환자 GraphRAG는
+> 현재 배포 호환을 위해 남아 있는 레거시이며 제거 대상입니다. 최종 구조는
+> [아키텍처 v2](doc/ARCHITECTURE_V2.md)를 기준으로 합니다.
 
 이 README는 프로젝트의 최상위 운영 문서입니다. 다음 내용을 한 번에 설명합니다.
 
 - 사용자가 서비스를 이용하는 전체 흐름
-- 모집공고와 환자 데이터가 처리되는 데이터 흐름
+- 모집공고와 사용자 지원서가 처리되는 데이터 흐름
 - 현재 AWS에 실제 배포된 아키텍처와 목표 아키텍처의 차이
 - 런타임 에이전트, Tool, 결정론적 판정 계층의 역할
 - 프로젝트에서 정의한 크롤링 Skill과 개발·배포 과정에서 사용한 Codex Skill
@@ -23,10 +29,10 @@
 |------|----|
 | 운영 브랜치 | `deployment` |
 | 프론트엔드 | <https://d2sajombqek5ru.cloudfront.net> |
-| Matching API | `https://3fotb3ilzmnopf6gvflmequl440rmaxi.lambda-url.ap-northeast-2.on.aws` |
+| Matching API | `https://4ycaav2kgzzlcjro24coxhcrk40hhcge.lambda-url.ap-northeast-2.on.aws` |
 | API 헬스체크 | 위 API 주소 + `/health` |
-| 기본 리전 | 서울 `ap-northeast-2` |
-| GraphRAG 리전 | 오리건 `us-west-2` |
+| 운영 리전 | 서울 `ap-northeast-2` |
+| GraphRAG 리전 | 버지니아 `us-east-1` (선택 계층) |
 | 인증 | Amazon Cognito ID Token |
 | 프론트 호스팅 | 비공개 S3 + CloudFront OAC |
 | API 런타임 | FastAPI + Mangum + AWS Lambda Function URL |
@@ -46,9 +52,10 @@ Function URL로 보냅니다. Lambda가 요청 시 기동되므로 서버 인스
 3. **근거 ID 없는 결론은 통과하지 않습니다.** 설명과 판단은 사용한 근거 ID를
    제시해야 하며, Verifier가 날짜·단위·연산자·출처를 검사합니다.
 4. **UNKNOWN은 실패가 아닙니다.** 정보 부족, 근거 충돌, 기준 해석의 불확실성을
-   별도 상태로 유지하고 질문, A2A 검토, Human Review로 보냅니다.
-5. **직접 식별자는 모델과 RAG에 보내지 않습니다.** 환자 문서는 비식별화 후에만
-   GraphRAG 소스로 사용합니다.
+   별도 상태로 유지하고 추가 질문 또는 Human Review로 보냅니다. 운영에서는 A2A를
+   사용하지 않습니다.
+5. **직접 식별자와 지원서 원문은 RAG에 보내지 않습니다.** GraphRAG를 유지할 경우
+   공개 공고·표준문서 검색 보조 용도로만 사용합니다.
 6. **같은 입력과 같은 기준 버전은 같은 결과를 만들어야 합니다.** 수치 비교,
    기간 계산, 종합 상태 확정은 결정론적으로 수행합니다.
 7. **AWS 인프라는 CDK가 기준입니다.** 콘솔에서 수동 변경한 설정은 다음 배포에서
@@ -62,8 +69,8 @@ Function URL로 보냅니다. Lambda가 요청 시 기동되므로 서버 인스
 ├── backend/
 │   ├── app.py                 CDK 애플리케이션 진입점
 │   ├── infra/                 AWS 스택 정의
-│   ├── lambdas/               공고·환자 데이터 파이프라인 Lambda
-│   ├── step_functions/        EMR/공고 파이프라인 상태 머신
+│   ├── lambdas/               공고 파이프라인 Lambda + 레거시 sanitizer
+│   ├── step_functions/        공고 파이프라인 + 레거시 EMR 상태 머신
 │   ├── lambda_api/            Mangum Lambda 어댑터
 │   ├── scripts/               API 패키징·시드 데이터 생성
 │   └── api/                   FastAPI 스크리닝 서비스
@@ -187,29 +194,35 @@ AI 매칭 광고, 일반 헬스케어 서비스는 제외하고 실제 모집공
 | 승인된 Criteria JSON | 런타임 판정 Source of Truth |
 | `pending_review` 기준 | 검토 전 임시 결과, 추천에 사용 금지 |
 
-## 6. 환자 데이터와 GraphRAG 워크플로우
+## 6. 지원서 판정과 공개문서 GraphRAG 워크플로우
+
+지원서 JSON은 RAG에 저장하지 않고 판정기에 직접 전달한다. GraphRAG는 공개
+공고·표준문서의 원문 근거만 검색한다.
 
 ```mermaid
 flowchart TD
-    A[임상 원문/clinical_notes.jsonl] --> B[S3 raw]
-    B --> C[Sanitizer Lambda]
-    C --> D[직접 식별자 제거]
-    D --> E[HMAC 기반 pseudonymous patient key]
-    E --> F[환자별 Markdown + metadata]
-    F --> G[S3 rag/patients]
-    G --> H[Bedrock KB ingestion]
-    H --> I[Neptune Analytics GraphRAG]
-    I --> J[Evidence Retrieval Tool]
-    J --> K[기준별 Evidence Bundle]
+    A[공개 임상시험 공고] --> B[Protocol Parser]
+    B --> C[CriteriaStore]
+    B --> D[S3 rag/references]
+    D --> E[Bedrock KB ingestion]
+    E --> F[Neptune Analytics GraphRAG]
+    G[완성 지원서 JSON] --> H[판정기]
+    C --> H
+    F --> I[공고·표준문서 근거]
+    I --> H
+    H --> J[OK / NOT_OK / UNKNOWN + 이유]
 ```
 
-현재 기본 리전은 서울이지만 GraphRAG만 `us-west-2`에 있습니다. 서울 리전의
-Bedrock Knowledge Bases가 프로젝트 배포 시점에 `NEPTUNE_ANALYTICS` 저장 유형을
-지원하지 않아 생긴 제약입니다. 리전 간 이동 데이터는 비식별화가 끝난 문서로
-제한합니다.
+서비스 본체는 서울 `ap-northeast-2`에 있고 GraphRAG 계층만 버지니아 `us-east-1`에
+있습니다. 취향이 아니라 제약입니다 — Bedrock Knowledge Bases의 GraphRAG
+(`NEPTUNE_ANALYTICS` 스토리지)는 서울에서 제공되지 않습니다. 지원 리전은
+프랑크푸르트·런던·아일랜드·오리건·버지니아·도쿄·싱가포르입니다.
 
-GraphRAG는 판정 원본이 아닙니다. 환자 근거와 표준문서 검색을 돕는 계층이며,
-수치 비교와 선정/제외 기준의 진실 원본은 구조화 데이터와 Criteria JSON입니다.
+그래서 서울↔버지니아 교차 리전 호출이 하나 있습니다. `KNOWLEDGE_BASE_REGION`과
+`S3_RAG_BUCKET_NAME`으로 그 경계를 명시적으로 관리합니다.
+
+GraphRAG는 판정 원본이 아닙니다. 공개 공고·표준문서 검색을 돕는 선택 계층이며,
+수치 비교와 선정/제외 기준의 진실 원본은 지원서 JSON과 Criteria JSON입니다.
 
 ## 7. 스크리닝 내부 아키텍처
 
@@ -422,9 +435,10 @@ flowchart TD
 | `HealthcareObservabilityStack` | 서울 | CloudWatch 대시보드, SNS |
 | `HealthcareMainStack` | 서울 | CriteriaStore, Lambda, Step Functions, EventBridge, DLQ |
 | `HealthcareGuardrailStack` | 서울 | Bedrock Guardrail |
+| `HealthcareA2AStack` | 서울 | 독립 Reviewer·Challenger Lambda, IAM Function URL |
 | `HealthcareApiStack` | 서울 | FastAPI Lambda, Function URL, IAM |
 | `HealthcareFrontendStack` | 서울 | 비공개 S3, CloudFront OAC, SPA fallback |
-| `HealthcareGraphRagStack` | 오리건 | Neptune Analytics, Bedrock KB, 소스 S3, KMS |
+| `HealthcareGraphRagStack` | **버지니아** | 선택적 Neptune Analytics, Bedrock KB, 소스 S3, KMS |
 
 ### 10.2 프론트 캐시 정책
 
@@ -441,11 +455,12 @@ flowchart TD
 
 | 항목 | 현재 상태 | 목표 |
 |------|-----------|------|
-| 환자 데이터 | 배포 패키지의 시드 환자 3명 | 실제 비식별 임상 이벤트 저장소 |
-| Run/Application Store | Lambda 메모리 | DynamoDB 또는 Redis 영속화 |
-| ElastiCache | 미배포 | 개인정보 JSON TTL 임시 처리 |
+| 매칭 입력 | 레거시 시드 환자 + 지원서 보충값 | 완료 지원서 JSON 단독 입력 |
+| Application Store | DynamoDB `IntakeStore` | 유지 |
+| Run Store | Lambda 메모리 | DynamoDB 영속화 |
+| ElastiCache | 미배포 | 필수 아님. 성능상 필요할 때만 캐시로 도입 |
 | 공고 DB | `CriteriaStore` 중심 | Notice/Criteria/Audit 테이블 분리 |
-| GraphRAG 인덱스 | 인프라 연결, 실제 문서 부족 가능 | 정기 ingestion과 품질 평가 |
+| GraphRAG 인덱스 | 합성 검증 문서 1건 색인·검색 확인 | 공개 공고·표준문서 검색으로 전환 |
 | 크롤러 자동 실행 | 수동 Playwright와 파이프라인 연결 | Scheduler 기반 정기 수집 |
 | 자동 CI/CD | 없음, 현재 수동 CDK/S3 배포 | `deployment` push 기반 검증·배포 |
 | 사용자 세션 | Lambda 메모리 일부 사용 | 콜드 스타트에 안전한 영속 세션 |
@@ -583,33 +598,29 @@ cd backend
 scripts/build_api_asset.sh
 ```
 
-이 스크립트는 Linux x86_64 Python 3.12 wheel, FastAPI 코드, `agent/`, Mangum
-handler, 배포용 시드 데이터셋을 `backend/build/api_lambda`에 만듭니다.
+이 스크립트는 Matching API 자산을 `backend/build/api_lambda`에 만듭니다. A2A
+서버 자산은 운영 배포에서 만들지 않습니다.
 
 ### 16.3 CDK diff와 배포
 
-GraphRAG 출력값을 컨텍스트로 전달해야 합니다. 실제 값은
-`doc/DEPLOYMENT.md`에서 확인합니다.
+배포 리전은 서울 `ap-northeast-2`입니다. GraphRAG는 선택 사항이며, 사용하지
+않으면 버지니아 리소스 ID를 전달하지 않습니다.
 
 ```bash
 cd backend
 npx -y aws-cdk@latest diff HealthcareMainStack HealthcareApiStack \
   --app '.venv/bin/python app.py' \
-  -c knowledge_base_id=<id> \
-  -c data_source_id=<id> \
-  -c graphrag_bucket=<bucket> \
-  -c guardrail_id=<id> \
-  -c guardrail_version=<version> \
   -c frontend_origin=<cloudfront-origin>
 ```
 
 diff에서 삭제나 예상하지 못한 교체가 없는지 확인한 뒤 배포합니다.
 
 ```bash
-npx -y aws-cdk@latest deploy HealthcareMainStack HealthcareApiStack \
+npx -y aws-cdk@latest deploy \
+  HealthcareGuardrailStack HealthcareMainStack HealthcareApiStack \
   --app '.venv/bin/python app.py' \
   --require-approval never \
-  <동일한 context 인자>
+  -c frontend_origin=<cloudfront-origin>
 ```
 
 ### 16.4 프론트 S3 + CloudFront 배포
@@ -698,11 +709,10 @@ aws logs tail /aws/lambda/healthcare-matching-api \
 
 ## 20. 다음 우선순위
 
-1. Lambda 메모리의 지원서/실행 Store를 DynamoDB 또는 Redis로 영속화
-2. 승인 공고와 CriteriaStore 운영 데이터 적재 자동화
-3. 크롤러 EventBridge Scheduler와 관리자 검토 UI 완성
-4. 실제 비식별 EMR 데이터셋과 GraphRAG ingestion 연결
-5. `deployment` push 기반 테스트·CDK diff·배포 CI/CD 구축
-6. npm 취약점과 CDK deprecated API 정리
-7. 사용자 흐름 E2E 테스트와 Cognito 테스트 계정 자동화
-8. CloudWatch 알람, 비용 알림, 운영 대시보드 검증
+1. 완료 지원서 JSON을 `person_id` 없이 직접 판정하는 런타임 계약 구현
+2. 실행·추천 Store를 DynamoDB에 영속화
+3. 승인 공고와 CriteriaStore 운영 데이터 적재 자동화
+4. 크롤러 EventBridge Scheduler와 관리자 검토 UI 완성
+5. 레거시 환자 API, EMR 파이프라인, 시드 환자 패키징 제거
+6. 지원서 기반 골든셋과 사용자 흐름 E2E 테스트 구축
+7. `deployment` push 기반 테스트·CDK diff·배포 CI/CD 구축

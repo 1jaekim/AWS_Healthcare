@@ -1,5 +1,5 @@
 {
-  "Comment": "환자정보 전처리 - 비식별화 후 Bedrock Knowledge Bases GraphRAG 동기화. GraphRAG 는 us-west-2 에 있어 bedrockagent 호출만 리소스 ARN 에 리전을 박아 교차 리전으로 나간다.",
+  "Comment": "레거시 임상 데이터 정제 파이프라인. GraphRAG에는 환자 문서를 적재하지 않는다.",
   "StartAt": "Sanitizer",
   "States": {
     "Sanitizer": {
@@ -7,128 +7,42 @@
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
         "FunctionName": "${SanitizerFunctionArn}",
-        "Payload": {
-          "source_key": "raw/clinical_notes.jsonl"
-        }
+        "Payload": {"source_key": "raw/clinical_notes.jsonl"}
       },
       "ResultPath": "$.sanitizer_result",
       "ResultSelector": {
         "status.$": "$.Payload.status",
         "canonical_output.$": "$.Payload.canonical_output",
-        "patient_documents.$": "$.Payload.patient_documents",
         "output_key.$": "$.Payload.output_key"
       },
-      "Retry": [
-        {
-          "ErrorEquals": [
-            "Lambda.ServiceException",
-            "Lambda.AWSLambdaException",
-            "Lambda.SdkClientException"
-          ],
-          "IntervalSeconds": 30,
-          "MaxAttempts": 3,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "PipelineFailedAlert",
-          "ResultPath": "$.error"
-        }
-      ],
-      "Next": "StartGraphRagIngestion"
+      "Retry": [{
+        "ErrorEquals": ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"],
+        "IntervalSeconds": 30,
+        "MaxAttempts": 3,
+        "BackoffRate": 2.0
+      }],
+      "Catch": [{
+        "ErrorEquals": ["States.ALL"],
+        "Next": "PipelineFailedAlert",
+        "ResultPath": "$.error"
+      }],
+      "Next": "PipelineSuccess"
     },
-    "StartGraphRagIngestion": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:${GraphRagRegion}::aws-sdk:bedrockagent:startIngestionJob",
-      "Parameters": {
-        "KnowledgeBaseId": "${KnowledgeBaseId}",
-        "DataSourceId": "${DataSourceId}",
-        "Description": "환자 비식별 문서 GraphRAG 동기화"
-      },
-      "ResultPath": "$.ingestion_start",
-      "Retry": [
-        {
-          "ErrorEquals": [
-            "BedrockAgent.ThrottlingException",
-            "BedrockAgent.ConflictException"
-          ],
-          "IntervalSeconds": 30,
-          "MaxAttempts": 5,
-          "BackoffRate": 2.0
-        }
-      ],
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "PipelineFailedAlert",
-          "ResultPath": "$.error"
-        }
-      ],
-      "Next": "WaitForGraphRagIngestion"
-    },
-    "WaitForGraphRagIngestion": {
-      "Type": "Wait",
-      "Seconds": 30,
-      "Next": "CheckGraphRagIngestion"
-    },
-    "CheckGraphRagIngestion": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:${GraphRagRegion}::aws-sdk:bedrockagent:getIngestionJob",
-      "Parameters": {
-        "KnowledgeBaseId": "${KnowledgeBaseId}",
-        "DataSourceId": "${DataSourceId}",
-        "IngestionJobId.$": "$.ingestion_start.IngestionJob.IngestionJobId"
-      },
-      "ResultPath": "$.ingestion_status",
-      "Catch": [
-        {
-          "ErrorEquals": ["States.ALL"],
-          "Next": "PipelineFailedAlert",
-          "ResultPath": "$.error"
-        }
-      ],
-      "Next": "IsGraphRagIngestionComplete"
-    },
-    "IsGraphRagIngestionComplete": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Variable": "$.ingestion_status.IngestionJob.Status",
-          "StringEquals": "COMPLETE",
-          "Next": "PipelineSuccess"
-        },
-        {
-          "Variable": "$.ingestion_status.IngestionJob.Status",
-          "StringEquals": "FAILED",
-          "Next": "PipelineFailedAlert"
-        },
-        {
-          "Variable": "$.ingestion_status.IngestionJob.Status",
-          "StringEquals": "STOPPED",
-          "Next": "PipelineFailedAlert"
-        }
-      ],
-      "Default": "WaitForGraphRagIngestion"
-    },
-    "PipelineSuccess": {
-      "Type": "Succeed"
-    },
+    "PipelineSuccess": {"Type": "Succeed"},
     "PipelineFailedAlert": {
       "Type": "Task",
       "Resource": "arn:aws:states:::sns:publish",
       "Parameters": {
         "TopicArn": "${AlertTopicArn}",
-        "Subject": "[Healthcare Pipeline] GraphRAG 동기화 실패",
-        "Message.$": "States.Format('환자정보 GraphRAG 파이프라인 실패: {}', $)"
+        "Subject": "[Healthcare Pipeline] 임상 데이터 정제 실패",
+        "Message.$": "States.Format('임상 데이터 정제 파이프라인 실패: {}', $)"
       },
       "Next": "PipelineFailed"
     },
     "PipelineFailed": {
       "Type": "Fail",
-      "Cause": "환자정보 GraphRAG 파이프라인 처리 중 오류 발생",
-      "Error": "GraphRagPipelineError"
+      "Cause": "임상 데이터 정제 중 오류 발생",
+      "Error": "ClinicalDataPipelineError"
     }
   }
 }

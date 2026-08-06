@@ -18,7 +18,11 @@ def _flag(name: str, default: bool = False) -> bool:
 
 
 DEFAULT_REGION = "ap-northeast-2"
-"""배포 리전 기본값. 서울 리전에 Bedrock KB 와 Neptune Analytics 를 둔다.
+"""서비스 본체의 리전 기본값. 서울이다.
+
+GraphRAG 만 예외로 us-east-1 에 있다. Bedrock Knowledge Bases 의 GraphRAG 가
+서울에서 제공되지 않기 때문이다. 그 리전은 `GraphRagSettings.region` 이 따로
+관리하므로 이 상수와 섞지 않는다.
 
 리전 기본값을 여러 곳에 흩어 적으면 한쪽만 바뀌어도 조용히 어긋난다. 모델 호출과
 GraphRAG 검색이 서로 다른 리전을 보게 되면 KB 를 찾지 못한다. 그래서 이 상수와
@@ -124,23 +128,11 @@ class GraphRagSettings:
     )
     """KB 만 다른 리전에 있을 때 쓰는 값.
 
-    나머지 인프라는 서울에 있지만 GraphRAG 는 us-west-2 에 있다. Bedrock
-    Knowledge Bases 가 서울에서 Neptune Analytics 스토리지를 아직 받지 않기
-    때문이다(`backend/infra/graphrag_stack.py`).
-
-    비워두면 `region` 과 같아진다. 리전이 갈린 배포에서 이 값을 빠뜨리면 API 가
-    서울에서 KB 를 찾다가 ResourceNotFound 로 떨어진다. 조용히 로컬 검색으로
-    내려앉지 않고 실패하는 편이 낫다 — 근거 없이 판정이 나가는 것보다 낫다.
-
-    서울에서 KB 가 열리면 이 값을 지우면 된다.
+    서비스 본체는 서울이지만 GraphRAG 는 us-east-1 에 있다. Bedrock Knowledge
+    Bases 가 서울에서 GraphRAG(NEPTUNE_ANALYTICS 스토리지)를 제공하지 않기
+    때문이다. 따라서 KB 를 켤 때는 `KNOWLEDGE_BASE_REGION=us-east-1` 를 반드시
+    함께 넣어야 한다. 빠지면 서울에서 KB 를 찾다가 실패한다.
     """
-
-    patient_pseudonym_secret: str | None = field(
-        default_factory=lambda: os.getenv("PATIENT_PSEUDONYM_SECRET") or None
-    )
-    patient_pseudonym_secret_arn: str | None = field(
-        default_factory=lambda: os.getenv("PATIENT_PSEUDONYM_SECRET_ARN") or None
-    )
 
     @property
     def enabled(self) -> bool:
@@ -222,6 +214,32 @@ class CriteriaStoreSettings:
         return bool(self.table_name)
 
 
+@dataclass(frozen=True)
+class A2ASettings:
+    """Independent reviewer/challenger Lambda endpoints."""
+
+    reviewer_url: str | None = field(
+        default_factory=lambda: os.getenv("A2A_REVIEWER_URL") or None
+    )
+    challenger_url: str | None = field(
+        default_factory=lambda: os.getenv("A2A_CHALLENGER_URL") or None
+    )
+    region: str = field(
+        default_factory=lambda: os.getenv("A2A_REGION") or resolve_region()
+    )
+    timeout_seconds: int = field(
+        default_factory=lambda: _int("A2A_TIMEOUT_SECONDS", 90)
+    )
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.reviewer_url and self.challenger_url)
+
+    @property
+    def partially_configured(self) -> bool:
+        return bool(self.reviewer_url) != bool(self.challenger_url)
+
+
 DEFAULT_CORS_ORIGINS = (
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -256,6 +274,7 @@ class Settings:
     graphrag: GraphRagSettings = field(default_factory=GraphRagSettings)
     auth: AuthSettings = field(default_factory=AuthSettings)
     criteria_store: CriteriaStoreSettings = field(default_factory=CriteriaStoreSettings)
+    a2a: A2ASettings = field(default_factory=A2ASettings)
     cors_allow_origins: tuple[str, ...] = field(default_factory=_origins)
 
 

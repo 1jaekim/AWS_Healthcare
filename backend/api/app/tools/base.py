@@ -61,7 +61,7 @@ class ToolContext:
     """Tool 호출 단위 컨텍스트. 실행 추적에 필요한 식별자를 전달한다."""
 
     run_id: str
-    person_id: int
+    person_id: int | None
     trial_id: str
     index_encounter_id: str
     index_date: str

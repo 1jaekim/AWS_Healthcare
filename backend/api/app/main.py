@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
@@ -193,9 +192,8 @@ def architecture(request: Request, container: Ctx, _: AdminUser) -> dict:
         "retrieval": {
             "tool": "evidence_retrieval_tool",
             "mode": container.retrieval_mode,
-            "patient_key_filter_required": (
-                container.retrieval_mode == "bedrock_graphrag"
-            ),
+            "patient_key_filter_required": False,
+            "scope": "public_trial_and_standard_references",
         },
         "auth": request.app.state.auth.describe(),
     }
@@ -510,12 +508,7 @@ def screen_completed_application(
     container: Ctx,
     principal: CurrentUser,
 ) -> dict:
-    """완성 지원서 JSON을 보충 근거로 넣고 GraphRAG 스크리닝을 실행한다."""
-    ensure_person_access(principal, payload.person_id)
-    if payload.person_id not in container.repository.patients:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found"
-        )
+    """완성 지원서 JSON과 공개 참고문서만으로 스크리닝을 실행한다."""
     try:
         application, schema = container.application_intake.completed_application(
             application_id, owner_sub=principal.subject
@@ -541,10 +534,12 @@ def screen_completed_application(
     )
     try:
         output = container.orchestrator.run(
-            person_id=payload.person_id,
+            person_id=None,
             trial_id=trial_id,
             actor=payload.actor,
             supplements=supplements.observations,
+            application_id=application_id,
+            owner_sub=principal.subject,
         )
     except (PatientNotFound, TrialNotFound) as exc:
         raise HTTPException(
@@ -555,7 +550,7 @@ def screen_completed_application(
         "APPLICATION_SCREENING_LINKED",
         actor=payload.actor,
         run_id=output.run.run_id,
-        person_id=payload.person_id,
+        person_id=None,
         trial_id=trial_id,
         application_id=application_id,
         supplement_fields=sorted(supplements.observations),
@@ -583,6 +578,7 @@ def _run_response(container: Container, output) -> dict:
     return {
         "run_id": output.run.run_id,
         "person_id": output.run.person_id,
+        "application_id": output.run.metadata.get("application_id"),
         "trial_id": output.run.trial_id,
         "criteria_version": output.run.criteria_version,
         "index_encounter_id": output.run.index_encounter_id,
@@ -606,6 +602,18 @@ def _run_response(container: Container, output) -> dict:
         "trace": output.trace_summary,
         "limitations": _LIMITATIONS,
     }
+
+
+def _ensure_run_access(principal, run) -> None:
+    """지원서는 Cognito sub로, 레거시 실행은 person_id로 소유권을 검사한다."""
+    owner_sub = run.metadata.get("owner_sub")
+    if owner_sub:
+        if owner_sub != principal.subject and not principal.is_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+        return
+    if run.person_id is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    ensure_person_access(principal, run.person_id)
 
 
 def _screening_decision(eligibility_status: str | None) -> str:
@@ -658,12 +666,13 @@ def get_screening(run_id: str, container: Ctx, principal: CurrentUser) -> dict:
     artifacts = container.run_store.get_artifacts(run_id)
     if run is None or artifacts is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
-    ensure_person_access(principal, run.person_id)
+    _ensure_run_access(principal, run)
 
     packet = artifacts.packet
     return {
         "run_id": run.run_id,
         "person_id": run.person_id,
+        "application_id": run.metadata.get("application_id"),
         "trial_id": run.trial_id,
         "criteria_version": run.criteria_version,
         "index_encounter_id": run.index_encounter_id,
@@ -703,7 +712,6 @@ def run_recommendations(
 ) -> dict:
     """후보 공고를 모두 판정하고 제한형 A2A 결과까지 반영해 순위를 만든다."""
     supplements_by_trial: dict[str, dict[str, Any]] = {}
-    profile_only = False
     if payload.application_id:
         try:
             application, schema = container.application_intake.completed_application(
@@ -719,17 +727,15 @@ def run_recommendations(
                 detail="Application must be COMPLETE before recommendations",
             ) from exc
         application_trial_id = str(application["trial_id"])
-        # 지원서 흐름은 Cognito sub에서 만든 비식별 내부 ID와 사용자가 제출한
-        # 답변만 사용한다. 브라우저가 보낸 person_id나 합성 EMR을 섞지 않는다.
-        digest = hashlib.sha256(principal.subject.encode("utf-8")).digest()
-        person_id = 1_000_000_000 + int.from_bytes(digest[:4], "big") % 1_000_000_000
+        # 지원서 흐름은 Cognito sub 소유권과 완성 JSON만 사용한다. 내부 가짜
+        # person_id도 만들지 않으며 타임라인 조회를 건너뛴다.
+        person_id = None
         trial_ids = [application_trial_id]
         supplement_set = ApplicationSupplementBuilder().build(
             application=application,
             json_schema=schema["json_schema"],
         )
         supplements_by_trial[application_trial_id] = supplement_set.observations
-        profile_only = True
     else:
         if principal.person_id is None:
             raise HTTPException(
@@ -767,7 +773,8 @@ def run_recommendations(
             top_k=payload.top_k,
             actor=payload.actor,
             supplements_by_trial=supplements_by_trial,
-            allow_profile_only=profile_only,
+            application_id=payload.application_id,
+            owner_sub=principal.subject if payload.application_id else None,
         )
     except PatientNotFound as exc:
         raise HTTPException(
@@ -794,9 +801,14 @@ def get_recommendations(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Recommendation not found",
         )
-    owner = payload.get("person_id")
-    if isinstance(owner, int):
-        ensure_person_access(principal, owner)
+    owner_sub = payload.get("owner_sub")
+    if owner_sub:
+        if owner_sub != principal.subject and not principal.is_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    else:
+        owner = payload.get("person_id")
+        if isinstance(owner, int):
+            ensure_person_access(principal, owner)
     return payload
 
 
@@ -978,7 +990,7 @@ def rerun_screening(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Run not found"
         )
-    ensure_person_access(principal, run.person_id)
+    _ensure_run_access(principal, run)
 
     answers = container.run_store.answers_for(run_id)
     if not answers:
@@ -994,6 +1006,8 @@ def rerun_screening(
             trial_id=run.trial_id,
             actor=actor,
             supplements=supplements.observations,
+            application_id=run.metadata.get("application_id"),
+            owner_sub=run.metadata.get("owner_sub"),
         )
     except (PatientNotFound, TrialNotFound) as exc:
         raise HTTPException(
@@ -1040,7 +1054,8 @@ def list_trial_reviews(
     container: Ctx,
     _: AdminUser,
     review_status: Annotated[
-        str, Query(alias="status", pattern="^(pending_review|approved|rejected)$")
+        str,
+        Query(alias="status", pattern="^(pending_review|approved|rejected|NEEDS_FIX)$"),
     ] = "pending_review",
     limit: Annotated[int, Query(ge=1, le=100)] = 100,
 ) -> list[dict]:

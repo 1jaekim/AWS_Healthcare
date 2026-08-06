@@ -1,10 +1,19 @@
 # 임상시험 매칭 모델 v2
 
+> **운영 결정 (2026-08-06):** A2A 토론은 지연 시간 때문에 사용하지 않는다. 아래
+> A2A 계약과 평가 항목은 연구 기록이며, 운영의 미해소 `UNKNOWN`은 추가 질문 또는
+> Human Review로 처리한다.
+
+> **데이터 소스 변경:** 이 문서의 판정·A2A 계약은 유지하지만, 기존 환자 기록,
+> EHR/EMR, 환자 Timeline/GraphRAG를 입력으로 사용하는 설명은 레거시다. 최종 모델은
+> 승인된 공고 기준과 사용자가 직접 제출한 지원서·추가 답변만 사용한다. 데이터 흐름과
+> 마이그레이션 우선순위는 [ARCHITECTURE_V2.md](ARCHITECTURE_V2.md)를 기준으로 한다.
+
 ## 목적
 
-이 모델은 Medi25에서 가져온 임상시험 모집공고와 사용자의 기본 정보, 환자정보 기입, 추가 설문 데이터를 종합해 사용자에게 가장 적합한 임상시험을 추천한다.
+이 모델은 Medi25에서 가져온 임상시험 모집공고와 사용자가 직접 작성한 지원서 및 추가 답변을 종합해 사전 적격성이 높은 임상시험을 추천한다.
 
-최종 결과는 기준별로 `OK`, `NOT_OK`, `UNKNOWN` 세 가지 상태를 반환한다. 사용자가 선택한 공고에는 공통 지원 스키마를 먼저 적용하고, LLM이 공고별 필드를 추가한다. 자연어 지원서에서 누락된 필드는 최대 5회까지 다시 질문해 완성 JSON을 만든다. 완성 JSON은 기존 환자 기록과 연결되어 GraphRAG/Timeline 조회와 오케스트레이터 판정에 사용된다. 그래도 남는 `UNKNOWN`은 A2A 토론 또는 사람 검토로 넘긴다.
+최종 결과는 기준별로 `OK`, `NOT_OK`, `UNKNOWN` 세 가지 상태를 반환한다. 사용자가 선택한 공고에는 공통 지원 스키마와 승인된 공고 기준에서 파생한 필드를 적용한다. 자연어 지원서에서 누락된 필드는 최대 5회까지 다시 질문해 완성 JSON을 만들고, 그 JSON을 오케스트레이터 판정의 근거로 사용한다. 그래도 남는 `UNKNOWN`은 A2A 토론 또는 사람 검토로 넘긴다.
 
 ## 전체 모델 흐름
 
@@ -572,17 +581,16 @@ sequenceDiagram
 오케스트레이션 단계:
 
 1. 선택 공고에 공통 지원 스키마와 공고별 추가 필드를 합쳐 버전을 고정한다.
-2. 자연어 지원서와 추가 답변을 메모리 변수에 병합하며 누락 필드를 최대 5회 재질문한다.
-3. `COMPLETE` 지원서를 `person_id`로 기존 환자 기록과 연결한다.
-4. 지원서 스칼라 필드를 `PATIENT_REPORTED` 보충 관찰값으로 변환한다.
-5. `run_id`를 만들고 해당 공고의 최신 선정/제외 기준 버전을 가져온다.
-6. Timeline Tool에서 기존 구조화 임상 이벤트를 조회하고, 기존 기록에 값이 없을 때만 지원서 보충값을 적용한다.
-7. 자유서술 근거가 필요한 기준은 GraphRAG `evidence_retrieval_tool`로 환자 근거를 조회한다.
-8. Bedrock LLM이 기준별 상태를 제안한다.
-9. Verifier가 근거 출처, 날짜, 단위, 기준 연산자를 검증한다.
-10. 남은 `UNKNOWN` 중 애매한 기준만 A2A 토론으로 넘긴다.
-11. A2A는 제한 라운드 안에서 종료하고, 토론 결과를 추천 또는 사람 검토에 반영한다.
-12. 결과 JSON, 지원서 연결 메타데이터와 감사 이벤트를 저장한다.
+2. 자연어 지원서와 추가 답변을 DynamoDB에 병합하며 누락 필드를 최대 5회 재질문한다.
+3. `COMPLETE` 지원서의 소유권을 Cognito `sub`로 확인한다.
+4. 지원서 답변을 출처 ID가 있는 기준별 관찰값으로 변환한다.
+5. `run_id`를 만들고 지원서에 고정된 선정/제외 기준 버전을 가져온다.
+6. Rule Evaluator가 수치·날짜·단위·연산자를 판정한다.
+7. Bedrock LLM이 자연어 답변 또는 애매한 기준의 상태를 제안한다.
+8. Verifier가 답변 출처, 날짜, 단위, 기준 연산자를 검증한다.
+9. 남은 `UNKNOWN` 중 충돌하거나 해석이 애매한 기준만 A2A 토론으로 넘긴다.
+10. A2A는 제한 라운드 안에서 종료하고, 토론 결과를 추천 또는 사람 검토에 반영한다.
+11. 결과 JSON, 지원서 버전, 기준 버전과 감사 이벤트를 저장한다.
 
 ### 에이전트 Tool 계약
 
@@ -593,14 +601,13 @@ LLM이 직접 DB를 읽는 것이 아니라, 허용된 Tool을 통해서만 근�
 | `refresh_trial_notices` | `keyword`, `force_refresh` | 신규/변경 공고 목록 |
 | `get_trial_notice` | `trial_id` | 공고 정규화 JSON |
 | `get_trial_criteria` | `trial_id`, `criteria_version` | 선정/제외 기준 JSON |
-| `evidence_retrieval_tool` | `ToolContext`, `terms`, `top_k` | 환자별 자유서술 근거 문장 목록 |
-| `timeline_graph_tool` | `ToolContext`, `fields` | 구조화 임상 관찰값 |
-| `rule_evaluator` | `ToolContext`, `rule`, `observation` | 규칙 기반 판정 |
+| `get_application` | `application_id`, `owner_sub` | 완료 지원서와 답변 출처 ID |
+| `rule_evaluator` | `run_id`, `rule`, `application_observation` | 규칙 기반 판정 |
 | `save_matching_report` | `run_id`, `result_json` | 보고서 저장 위치 |
 | `POST /api/v1/application-schemas` | 공고문 또는 추가 필드 | 버전 고정 지원 JSON Schema |
 | `POST /api/v1/applications` | `schema_id`, 자연어 지원서 | 최초 추출값과 누락 필드 질문 |
 | `POST /api/v1/applications/{id}/responses` | 추가 자연어 답변 | 병합된 값과 다음 누락 필드 질문 |
-| `POST /api/v1/applications/{id}/screening` | `person_id`, `actor` | GraphRAG 오케스트레이터 실행 결과 |
+| `POST /api/v1/applications/{id}/screening` | `actor` | 지원서 기반 오케스트레이터 실행 결과 |
 
 Tool 호출 권한:
 
@@ -732,7 +739,7 @@ flowchart TD
 
 ## A2A 토론 모델
 
-A2A는 같은 `UNKNOWN` 기준을 두 역할이 교차 검토하는 구조다. 구현은 기준 수 최대 5개, 총 2라운드로 고정한다. 첫 번째 Bedrock 호출은 독립 근거 검토, 두 번째 호출은 반론 검토를 수행한다. 세 번째 LLM 심판은 두지 않고 결정론적 합의기가 결과를 정리한다.
+A2A는 같은 `UNKNOWN` 기준을 두 역할이 교차 검토하는 구조다. 구현은 기준 수 최대 5개, 총 2라운드로 고정한다. 첫 번째 독립 Lambda는 근거 검토를, 두 번째 독립 Lambda는 반론 검토를 수행하며 두 런타임은 A2A 1.0 JSON-RPC로 통신한다. 세 번째 LLM 심판은 두지 않고 Matching API의 결정론적 합의기가 결과를 정리한다.
 
 | 역할 | 관점 |
 |------|------|

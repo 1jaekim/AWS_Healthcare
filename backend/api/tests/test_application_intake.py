@@ -167,7 +167,7 @@ def test_completed_json_maps_scalar_fields_to_orchestrator_supplements() -> None
     assert set(result.observations) == {"age", "hba1c"}
     assert result.observations["hba1c"].value == 8.1
     assert result.observations["hba1c"].unit == "%"
-    assert result.observations["hba1c"].source == "PATIENT_REPORTED"
+    assert result.observations["hba1c"].source == "APPLICATION"
     assert result.observations["hba1c"].source_id == "APP-1:latest_hba1c"
     assert result.skipped == (
         {
@@ -222,7 +222,7 @@ def test_completed_application_calls_orchestrator_with_json_supplements(
 
     orchestrator = Orchestrator()
     container = SimpleNamespace(
-        repository=SimpleNamespace(patients={7: {}}, trials={"TRIAL-1": {}}),
+        repository=SimpleNamespace(patients={}, trials={"TRIAL-1": {}}),
         application_intake=SimpleNamespace(
             completed_application=lambda application_id, **kwargs: (application, schema)
         ),
@@ -234,15 +234,15 @@ def test_completed_application_calls_orchestrator_with_json_supplements(
 
     response = main.screen_completed_application(
         "APP-1",
-        ApplicationScreeningRequest(person_id=7, actor="tester"),
+        ApplicationScreeningRequest(actor="tester"),
         container,
-        # 엔드포인트를 직접 부르므로 의존성이 주입되지 않는다. 본인 환자 접근
-        # 검사를 통과하는 주체를 넘긴다.
-        Principal(subject="tester", person_id=7),
+        Principal(subject="tester"),
     )
 
     assert orchestrator.call is not None
-    assert orchestrator.call["person_id"] == 7
+    assert orchestrator.call["person_id"] is None
+    assert orchestrator.call["application_id"] == "APP-1"
+    assert orchestrator.call["owner_sub"] == "tester"
     assert orchestrator.call["trial_id"] == "TRIAL-1"
     assert orchestrator.call["supplements"]["hba1c"].value == 8.1
     assert response["supplements"]["source_application_id"] == "APP-1"

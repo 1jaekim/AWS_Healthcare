@@ -50,7 +50,8 @@ class ObservabilityStack(Stack):
         self.dashboard = cw.Dashboard(
             self,
             "HealthcarePipelineDashboard",
-            dashboard_name="Healthcare-Pipeline-Overview",
+            # CloudWatch dashboard names are account-global, not region-scoped.
+            dashboard_name=f"Healthcare-Pipeline-Overview-{self.region}",
             period_override=cw.PeriodOverride.AUTO,
         )
 
