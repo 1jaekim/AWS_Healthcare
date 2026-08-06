@@ -2,10 +2,23 @@
 
 ## Playwright 공개 공고 → AWS 저장
 
-한국임상시험참여포털 또는 Medi25의 로그인 제한 없는 공개 상세 페이지를 PNG로
-캡처하고, 이메일·전화번호를 DOM에서 마스킹한 뒤 S3에 업로드한다. 업로드된
-`trials/screenshots/*.png`는 EventBridge → `healthcare-trials-pipeline` →
-Textract → Bedrock → DynamoDB `CriteriaStore(pending_review)` 순서로 처리된다.
+한국임상시험참여포털 또는 Medi25의 로그인 제한 없는 공개 상세 페이지에서 본문
+텍스트를 추출하고 전체 페이지 PNG를 캡처한다. 이메일·전화번호는 DOM 단계에서
+마스킹한다. 업로드 산출물은 두 개이고 역할이 다르다.
+
+| S3 키 | 역할 | 파이프라인 |
+|-------|------|-----------|
+| `trials/documents/{prefix}_{page_id}.txt` | 기준 추출 입력 | EventBridge → `healthcare-trials-pipeline` → Bedrock → `CriteriaStore(pending_review)` |
+| `raw/trials/screenshots/{prefix}_{page_id}.png` | 감사 원본 | **아무것도 트리거하지 않음** |
+
+기준 추출은 **텍스트(`.txt`)에서만** 일어난다. 스크린샷은 사람이 원문을 확인할 때
+쓰는 증빙이다. Textract의 `detect_document_text` 가 한국어를 지원하지 않아
+스크린샷 OCR은 기준을 뽑아내지 못한다(측정: 문서 7건 평균 18.3개 기준 vs
+스크린샷 11건 평균 0.8개). 자세한 내용은 `doc/ARCHITECTURE_ASBUILT.md` 의
+"알려진 결함" 을 참고한다.
+
+`trial_id` 는 크롤러가 정하지 않는다. `protocol_parser` 가 실제로 파싱한
+`source_key` 로 만든다.
 
 ```bash
 python -m pip install -r crawler/requirements-playwright.txt

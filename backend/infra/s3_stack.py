@@ -100,3 +100,13 @@ class S3DataStack(Stack):
         """Protocol Parser Lambda에 trials/ 읽기 권한 부여"""
         self.data_bucket.grant_read(lambda_function, "trials/*")
         self.data_key.grant_decrypt(lambda_function)
+
+    def grant_trial_crawler_access(self, lambda_function: _lambda.Function) -> None:
+        """Trial Crawler Lambda에 파이프라인 입력·감사 원본 쓰기 권한 부여.
+
+        읽기는 주지 않는다. 크롤러는 외부에서 받아온 것만 쓰고 버킷 내용을
+        조회할 이유가 없다.
+        """
+        self.data_bucket.grant_put(lambda_function, "trials/documents/*")
+        self.data_bucket.grant_put(lambda_function, "raw/trials/html/*")
+        self.data_key.grant_encrypt_decrypt(lambda_function)

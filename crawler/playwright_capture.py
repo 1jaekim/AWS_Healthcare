@@ -46,7 +46,6 @@ def capture(
     timeout_ms: int = 30_000,
     *,
     s3_bucket: str | None = None,
-    s3_prefix: str = "trials/screenshots/",
 ) -> dict:
     url = _validated_url(url)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -60,7 +59,6 @@ def capture(
     prefix = "kct" if source == "KoreaClinicalTrials" else "medi25"
     screenshot_path = output_dir / f"{prefix}_{page_id}_{captured_at}.png"
     metadata_path = output_dir / f"{prefix}_{page_id}_{captured_at}.json"
-    document_path = output_dir / f"{prefix}_{page_id}_{captured_at}.txt"
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)
@@ -148,68 +146,43 @@ def capture(
             raise ValueError("로그인/접근 제한 화면은 공고 파이프라인에 업로드하지 않습니다.")
         import boto3
 
-        # 로컬 파일에는 수집 시각을 남기되 S3 키는 URL 해시로 고정한다. 같은
-        # 공고를 정기 수집할 때 timestamp 키를 계속 만들면 CriteriaStore에도
+        # 로컬 PNG/JSON 이름에는 수집 시각을 남기되 S3 키는 URL 해시로 고정한다.
+        # 같은 공고를 정기 수집할 때 timestamp 키를 계속 만들면 CriteriaStore에도
         # 중복 버전이 끝없이 쌓인다. 고정 키를 덮어쓰면 원문 최신화는 유지하면서
         # 공고별 파이프라인 입력 키는 안정적으로 재사용할 수 있다.
-        document_path.write_text(body_text, encoding="utf-8")
+        #
+        # trial_id 는 여기서 정하지 않는다. 예전에는 CriteriaStore 전체를 스캔해
+        # `canonical-trial-id` 를 만들어 넘겼는데, 그 값이 스크린샷 경로에서
+        # 나오는 탓에 스크린샷 행과 문서 행이 같은 trial_id 를 공유했다. 기준
+        # 0건인 스크린샷 행이 정상 문서 행과 한 시험에 섞이는 원인이었다. 지금은
+        # protocol_parser 가 실제로 파싱한 source_key 로 ID 를 만든다.
         evidence_key = f"raw/trials/screenshots/{prefix}_{page_id}.png"
         s3_key = f"trials/documents/{prefix}_{page_id}.txt"
-        canonical_trial_id = ""
-        try:
-            from boto3.dynamodb.conditions import Attr
-
-            criteria_table = boto3.resource("dynamodb").Table("CriteriaStore")
-            existing: list[dict] = []
-            scan_args: dict = {
-                "FilterExpression": Attr("source_key").contains(page_id),
-                "ProjectionExpression": "trial_id",
-            }
-            while not existing:
-                response = criteria_table.scan(**scan_args)
-                existing = response.get("Items", [])
-                last_key = response.get("LastEvaluatedKey")
-                if existing or not last_key:
-                    break
-                scan_args["ExclusiveStartKey"] = last_key
-            if existing:
-                canonical_trial_id = str(existing[0].get("trial_id") or "")
-        except Exception:
-            # 로컬 파일 캡처는 AWS 조회 없이도 가능해야 한다.
-            canonical_trial_id = ""
-        if not canonical_trial_id:
-            canonical_trial_id = "SRC-" + hashlib.sha256(
-                f"{s3_prefix.rstrip('/')}/{prefix}_{page_id}.png".encode("utf-8")
-            ).hexdigest()[:16]
-        boto3.client("s3").upload_file(
+        origin_metadata = {
+            "source-url": quote(final_url, safe=":/?&=%#"),
+            "source-url-sha256": page_id,
+            "source": prefix,
+            "captured-at": captured_at,
+        }
+        s3_client = boto3.client("s3")
+        s3_client.upload_file(
             str(screenshot_path),
             s3_bucket,
             evidence_key,
             ExtraArgs={
                 "ContentType": "image/png",
                 "Metadata": {
-                    "source-url": quote(final_url, safe=":/?&=%#"),
-                    "source-url-sha256": page_id,
+                    **origin_metadata,
                     "screenshot-sha256": metadata["screenshot_sha256"],
-                    "source": prefix,
-                    "captured-at": captured_at,
                 },
             },
         )
-        boto3.client("s3").upload_file(
-            str(document_path),
-            s3_bucket,
-            s3_key,
-            ExtraArgs={
-                "ContentType": "text/plain; charset=utf-8",
-                "Metadata": {
-                    "source-url": quote(final_url, safe=":/?&=%#"),
-                    "source-url-sha256": page_id,
-                    "canonical-trial-id": canonical_trial_id,
-                    "source": prefix,
-                    "captured-at": captured_at,
-                },
-            },
+        s3_client.put_object(
+            Bucket=s3_bucket,
+            Key=s3_key,
+            Body=body_text.encode("utf-8"),
+            ContentType="text/plain; charset=utf-8",
+            Metadata=origin_metadata,
         )
         metadata["s3_uri"] = f"s3://{s3_bucket}/{s3_key}"
         metadata["screenshot_s3_uri"] = f"s3://{s3_bucket}/{evidence_key}"
@@ -286,7 +259,6 @@ def capture_batch(
     limit: int,
     delay_seconds: float,
     s3_bucket: str | None = None,
-    s3_prefix: str = "trials/screenshots/",
 ) -> dict:
     """목록에서 발견한 공개 공고를 저속으로 캡처하고 선택적으로 S3에 올린다."""
 
@@ -297,14 +269,7 @@ def capture_batch(
     failed: list[dict[str, str]] = []
     for index, url in enumerate(urls):
         try:
-            captured.append(
-                capture(
-                    url,
-                    output_dir,
-                    s3_bucket=s3_bucket,
-                    s3_prefix=s3_prefix,
-                )
-            )
+            captured.append(capture(url, output_dir, s3_bucket=s3_bucket))
         except Exception as exc:  # 한 공고 실패가 전체 배치를 중단하지 않게 한다.
             failed.append({"url": url, "error": str(exc)})
         if index + 1 < len(urls):
@@ -326,7 +291,6 @@ def main() -> None:
         default=Path(__file__).resolve().parent / "output",
     )
     parser.add_argument("--s3-bucket", help="설정하면 캡처를 trials/ 아래에 업로드")
-    parser.add_argument("--s3-prefix", default="trials/screenshots/")
     parser.add_argument(
         "--list-url",
         help="지정하면 공개 목록에서 서로 다른 상세 URL을 찾아 배치 캡처",
@@ -346,15 +310,9 @@ def main() -> None:
             limit=args.limit,
             delay_seconds=args.delay_seconds,
             s3_bucket=args.s3_bucket,
-            s3_prefix=args.s3_prefix,
         )
         if args.list_url
-        else capture(
-            args.url,
-            args.output_dir,
-            s3_bucket=args.s3_bucket,
-            s3_prefix=args.s3_prefix,
-        )
+        else capture(args.url, args.output_dir, s3_bucket=args.s3_bucket)
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

@@ -166,6 +166,47 @@ class MainStack(Stack):
             dead_letter_queue=self.dlq,
         )
 
+        # ─── Trial Crawler Lambda ───────────────────────
+        # 공개 공고 수집. 브라우저를 쓰지 않으므로 표준 zip 패키지로 올린다.
+        # 이 사이트는 선정·제외 기준을 `sub/tab.do` AJAX 로 채우는데, 같은
+        # 내용을 평범한 GET 으로 받을 수 있어서 Chromium 컨테이너 이미지가
+        # 필요하지 않다. 의존성은 표준 라이브러리와 런타임 내장 boto3 뿐이다.
+        self.trial_crawler_fn = _lambda.Function(
+            self,
+            "TrialCrawlerFunction",
+            function_name="healthcare-trial-crawler",
+            runtime=_lambda.Runtime.PYTHON_3_12,
+            handler="handler.handler",
+            code=_lambda.Code.from_asset("lambdas/trial_crawler"),
+            environment={
+                **lambda_common_env,
+                "CRAWL_LIST_URL": (
+                    "https://trialforme.konect.or.kr/clnctest/list.do"
+                ),
+                "CRAWL_LIMIT": "10",
+                "CRAWL_DELAY_SECONDS": "1.5",
+            },
+            # 공고 10건 x (상세 1 + 탭 3) 요청에 건당 1.5초 간격을 둔다.
+            timeout=Duration.minutes(10),
+            memory_size=512,
+            dead_letter_queue=self.dlq,
+        )
+        # 파이프라인 입력(trials/)과 감사 원본(raw/) 두 경로에만 쓴다.
+        s3_stack.grant_trial_crawler_access(self.trial_crawler_fn)
+
+        # ─── EventBridge: 공고 정기 수집 ────────────────
+        # 수집 결과가 trials/documents/ 에 올라가면 아래 TrialsUploadRule 이
+        # 이어받아 기준 추출 파이프라인을 시작한다. 두 규칙이 사슬로 엮인다.
+        self.trial_crawl_schedule = events.Rule(
+            self,
+            "TrialCrawlSchedule",
+            description="공개 임상시험 공고 정기 수집",
+            schedule=events.Schedule.rate(Duration.hours(12)),
+        )
+        self.trial_crawl_schedule.add_target(
+            events_targets.LambdaFunction(self.trial_crawler_fn)
+        )
+
         # ─── Protocol Parser Lambda ─────────────────────
         self.protocol_parser_fn = _lambda.Function(
             self,

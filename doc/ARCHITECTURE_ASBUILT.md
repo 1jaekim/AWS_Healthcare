@@ -41,6 +41,7 @@ flowchart TD
         end
 
         subgraph INGEST["공고 수집·기준 추출"]
+            CRAWL["Lambda<br/>healthcare-trial-crawler<br/>12시간 스케줄"]
             S3RAW["S3 데이터 버킷<br/>raw/ · trials/"]
             PARSER["Lambda<br/>healthcare-protocol-parser"]
             SAN["Lambda<br/>healthcare-sanitizer"]
@@ -74,6 +75,7 @@ flowchart TD
     APIFN --> KB
     BR -.- GUARD
 
+    CRAWL --> S3RAW
     S3RAW --> PARSER --> CRIT
     SFN --> PARSER
     SFN --> SAN
@@ -122,8 +124,9 @@ flowchart TD
 | 버킷 | 리전 | 경로 | 내용 |
 |------|------|------|------|
 | `healthcares3stack-healthcaredatabucket...` | 서울 | `raw/` | 원본 입력 |
-| 같은 버킷 | 서울 | `trials/documents/*.txt` | 공고 텍스트 (기준 추출 성공 경로) |
-| 같은 버킷 | 서울 | `trials/screenshots/*.png` | 공고 스크린샷 (아래 결함 참고) |
+| 같은 버킷 | 서울 | `trials/documents/*.txt` | 공고 텍스트 (기준 추출 입력) |
+| 같은 버킷 | 서울 | `raw/trials/html/*.html` | 공고 감사 원본 (파싱한 바이트 그대로) |
+| 같은 버킷 | 서울 | `trials/screenshots/*.png` | 구 스크린샷 (아래 결함 참고, 신규 생성 중단) |
 | `healthcaregraphragstack-graphragsourcebucket...96pg` | **버지니아** | `rag/` | GraphRAG 소스 문서 |
 | `healthcarefrontendstack-frontendbucket...` | 서울 | `assets/` | SPA 빌드 산출물 |
 
@@ -173,10 +176,17 @@ Secrets Manager 조회가 필요하지 않다.
 | `healthcare-protocol-parser` | python3.12 | 512 MB | 300s | 공고 → 기준 JSON (Textract + Bedrock) |
 | `healthcare-sanitizer` | python3.12 | 1024 MB | 300s | 비식별화, GraphRAG 문서 생성 |
 | `healthcare-graphrag-ingestion` | python3.12 | 256 MB | 120s | KB 동기화 작업 실행 |
+| `healthcare-trial-crawler` | python3.12 | 512 MB | 600s | 공개 공고 수집 (12시간 스케줄) |
+| `healthcare-a2a-evidence-reviewer` | python3.12 | 1024 MB | 120s | A2A 1라운드 근거 검토 |
+| `healthcare-a2a-challenge-reviewer` | python3.12 | 1024 MB | 120s | A2A 2라운드 반론 검토 |
 
-`HealthcareA2AStack`(Reviewer·Challenger 독립 Lambda)은 **코드와 CDK는 완성됐으나
-아직 배포되지 않았다.** API의 `A2A_REVIEWER_URL`·`A2A_CHALLENGER_URL` 이 비어 있어
-A2A 토론은 같은 프로세스 안에서 두 역할을 순차 호출하는 경로로 동작한다.
+A2A 두 함수는 **IAM 역할이 서로 다르다.** 같은 에셋을 쓰지만 런타임과 권한이
+독립이다. Function URL 은 `AWS_IAM` 인증이므로 API Lambda 역할만 호출할 수 있고
+공개 엔드포인트가 아니다.
+
+`ApiStack` 은 `-c a2a_enabled=true` 로 배포해야 `A2A_REVIEWER_URL`·
+`A2A_CHALLENGER_URL` 이 채워진다. 플래그 없이 배포하면 두 값이 빈 문자열로
+덮여 **에러 없이 A2A 가 꺼지고** 인프로세스 경로로 되돌아간다.
 
 ## 모델과 안전장치
 
@@ -282,8 +292,8 @@ Guardrail을 붙이지 않는 것이 측정 결과에 부합한다.** 입력·�
 | `MatchingRunTable` · `MatchingReportTable` | 없음. 인메모리 |
 | `AdminAuditLogTable` | 없음. 인메모리 |
 | ElastiCache 임시 처리 계층 | 없음. `ApplicationStore` TTL이 대신한다 |
-| `Refresh 모집공고` API | 없음. 크롤러는 독립 스크립트다 |
-| 공고 최신성 확인 (`content_hash`, `last_checked_at`) | 없음 |
+| `Refresh 모집공고` API | API 는 없지만 `healthcare-trial-crawler` Lambda 가 12시간 스케줄로 대신한다 |
+| 공고 최신성 확인 (`content_hash`, `last_checked_at`) | 없음. S3 키를 URL 해시로 고정해 덮어쓰는 방식이라 중복은 막지만 변경 감지는 못 한다 |
 | 독립 A2A Lambda | 서울 Reviewer·Challenger 런타임으로 운영 배포 |
 | — | `ApplicationStore` 는 목표 설계에 없던 추가 구성이다 |
 
@@ -311,20 +321,58 @@ screenshots/kct_695402a17ea5_...png    514자  기준  0건  "YYXOB", "Polly olo
 같은 `trial_id` 에 정상 항목과 망가진 항목이 나란히 존재하므로 매칭이 후자를
 집으면 판정 불가가 된다.
 
-조치 방향: 스크린샷을 기준 추출 입력에서 제외하고 감사용 원본으로만 보관한다.
-계속 쓰려면 Bedrock 멀티모달로 교체한다. 그리고 기준 0건은 `pending_review` 가
-아니라 `NEEDS_FIX` 로 기록하고, 한글 문자 비율로 OCR 실패를 판정한다.
+**조치 (완료)**: 신규 수집은 스크린샷을 만들지 않는다. 감사 원본을 PNG 대신
+HTML(`raw/trials/html/`)로 남긴다. 우리가 실제로 파싱한 바이트라서 검색·비교가
+되고 OCR 문제와 무관하다.
 
-### 2. GraphRAG 스택이 두 리전에 중복 배포되어 있다
+같이 제거한 것이 이 결함의 2차 문제를 만든 장치였다. 예전 크롤러는
+`CriteriaStore` 전체를 스캔해 `canonical-trial-id` S3 메타데이터를 만들어
+넘겼는데, 그 값이 **스크린샷 경로**에서 나왔다.
 
-| 리전 | KB | 이름 | 상태 |
-|------|-----|------|------|
-| 버지니아 | `VZIL9VWWKP` | `healthcare-public-reference-graphrag` | 운영본 |
-| 오리건 | `JEGPQXQUUG` | `healthcare-patient-evidence-graphrag` | 구버전 |
+```
+크롤러: canonical-trial-id = SRC-sha256("trials/screenshots/kct_xxx.png")
+파서:   trial_id = canonical or stable_source_trial_id(source_key)
+```
 
-Neptune Analytics는 시간당 과금이므로 오리건 스택은 정리해야 한다. 코드
-기본값(`backend/app.py` 의 `GRAPHRAG_REGION`)도 버지니아로 맞춰야 배포된 값과
-일치한다.
+그래서 기준 0건인 스크린샷 행과 기준 26건인 문서 행이 **같은 `trial_id` 를
+공유했다.** 지금은 파서가 실제로 파싱한 `source_key` 로 ID 를 만든다. 전체 테이블
+스캔도 함께 사라졌다.
+
+**남은 작업**: 기존에 오염된 5건 정리. 그리고 기준 0건을 `pending_review` 가
+아니라 `NEEDS_FIX` 로 기록하는 처리는 아직 없다.
+
+### 2. GraphRAG 가 오리건에도 남아 있다 (버지니아로 전환 완료)
+
+GraphRAG 운영 리전을 **오리건 `us-west-2` → 버지니아 `us-east-1` 로 바꿨다.**
+코드 기본값(`backend/app.py` 의 `GRAPHRAG_REGION`)과 배포된 Lambda 4개의 환경
+변수가 모두 버지니아를 가리키는 것을 확인했다. 오리건을 참조하는 값은 없다.
+
+| | 버지니아 `us-east-1` | 오리건 `us-west-2` |
+|---|---|---|
+| KB | `VZIL9VWWKP` | `JEGPQXQUUG` |
+| 이름 | `healthcare-public-reference-graphrag` | `healthcare-patient-evidence-graphrag` |
+| Neptune 그래프 | `g-auaz36nmm8` 16 m-NCU | `g-6wg5ngdvv8` 16 m-NCU |
+| 수집 작업 | 3건 | 1건 |
+| S3 객체 | 4개 / 16,441 B | 2개 / 1,218 B |
+| 검색 결과 | 3건 | 1건 |
+| 검색 지연 (중앙값, 5회) | 1,532 ms | 1,344 ms |
+
+이름이 다른 것이 핵심이다. 단순 중복 배포가 아니라 **설계가 바뀐 것**이다.
+`patient-evidence`(환자 개인 근거) → `public-reference`(공개 참조 문서). 환자
+사실은 지원서 JSON 으로 직접 전달하고 리전을 넘는 것은 공개 문서뿐이다.
+
+오리건 내용은 버지니아의 부분집합이다. 오리건에는 합성 환자 파일
+(`pt_syn_dm_001.md`, 650 B) 하나뿐이고, 버지니아에는 그것 + 실제 공고 참조 문서
+(`rag/references/trials/SRC-30a9f79e59ed9822.md`, 14,322 B)가 있다.
+
+지연시간만 오리건이 188 ms(12%) 빠르다. 서울에서 물리적으로 더 가깝기 때문이다.
+다만 이 비교는 공정하지 않다 — 오리건은 문서 1건을 뒤졌고 버지니아는 3건을
+돌려줬다. 그리고 판정 한 건은 LLM 호출을 여러 번 하며 각각 수 초가 걸린다. 그
+안에서 검색 한 번의 188 ms 는 마이그레이션 비용을 정당화하지 못한다.
+
+**남은 작업**: 오리건 스택 삭제. Neptune Analytics 는 시간당 과금이라 두 리전에서
+16 m-NCU 씩, 합계 32 m-NCU 가 계속 돌고 있다. 스택을 지우면 그래프는 삭제되고
+(`DeletionPolicy: Delete`) KMS 키와 S3 버킷은 남는다(`Retain`).
 
 ### 3. 판정 결과가 영속화되지 않는다
 
