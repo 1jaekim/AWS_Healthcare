@@ -46,6 +46,7 @@ class RecommendationOrchestrator:
         supplements_by_trial: dict[str, dict[str, Any]] | None = None,
         application_id: str | None = None,
         owner_sub: str | None = None,
+        interest_areas: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         recommendation_id = self._runs.new_recommendation_id()
         def screen(trial_id: str) -> Any:
@@ -82,6 +83,7 @@ class RecommendationOrchestrator:
                 else self._repository.trials
             ),
             top_k=top_k,
+            interest_areas=interest_areas,
         )
         payload = {
             "recommendation_id": recommendation_id,

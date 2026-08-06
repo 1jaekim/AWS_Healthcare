@@ -67,6 +67,39 @@ BASE_PROPERTIES: dict[str, dict[str, Any]] = {
     },
 }
 RESERVED_FIELDS = set(BASE_PROPERTIES)
+
+OTHER_PERSON_WORDS = "|".join(
+    (
+        "아이",
+        "아기",
+        "자녀",
+        "아들",
+        "딸",
+        "조카",
+        "손자",
+        "손녀",
+        "어머니",
+        "아버지",
+        "엄마",
+        "아빠",
+        "부모",
+        "누나",
+        "오빠",
+        "언니",
+        "형",
+        "동생",
+        "배우자",
+        "남편",
+        "아내",
+        "친구",
+        "반려견",
+        "반려묘",
+        "반려동물",
+        "강아지",
+        "고양이",
+    )
+)
+"""나이 표기 옆에 붙으면 본인이 아니라는 신호. 지원자 나이 추출에서 제외한다."""
 NONE_ANSWERS = {
     "없음",
     "없어요",
@@ -179,10 +212,36 @@ class IntakeService:
         return record
 
     def start_application(
-        self, *, schema_id: str, application_text: str, owner_sub: str = ""
+        self,
+        *,
+        schema_id: str,
+        application_text: str,
+        owner_sub: str = "",
+        account_profile: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """첫 지원서를 만든다.
+
+        `account_profile` 은 계정에서 파생한 기본값(나이·성별)이다. 가입 때 이미
+        받은 값을 다시 묻지 않으려고 초기값으로 깔아둔다. 지원자가 답변에
+        명시하면 그 값이 덮어쓴다 — 계정 정보가 낡았을 수 있고, 정정할 길을
+        막으면 안 된다. 두 값이 다르면 `profile_conflicts` 에 남겨 사람이 볼 수
+        있게 한다.
+        """
         schema = self._require_schema(schema_id)
-        values = self._extract(schema["json_schema"], application_text, {})
+        seeded = self._validate_values(
+            schema["json_schema"], dict(account_profile or {})
+        )
+        extracted = self._extract(schema["json_schema"], application_text, seeded)
+        conflicts = [
+            {
+                "field": name,
+                "account_value": seeded[name],
+                "applicant_value": extracted[name],
+            }
+            for name in sorted(set(seeded) & set(extracted))
+            if seeded[name] != extracted[name]
+        ]
+        values = {**seeded, **extracted}
         now = datetime.now(UTC).isoformat()
         record = {
             "application_id": f"APP-{uuid4().hex}",
@@ -190,6 +249,8 @@ class IntakeService:
             "trial_id": schema["trial_id"],
             "owner_sub": owner_sub,
             "data": values,
+            "account_profile_fields": sorted(seeded),
+            "profile_conflicts": conflicts,
             "iteration": 1,
             "follow_up_count": 0,
             "status": "PROCESSING",
@@ -350,6 +411,11 @@ class IntakeService:
         if not isinstance(raw_values, dict):
             if deterministic:
                 return deterministic
+            if current:
+                # 이번 답변에서 새로 얻은 것이 없을 뿐이다. 계정에서 채운 값이나
+                # 앞선 답변이 이미 있으면 진행할 수 있다. 여기서 막으면
+                # "없습니다" 같은 정상 답변이 거부된다.
+                return {}
             raise IntakeExtractionError(
                 "답변을 구조화하지 못했습니다. 문장을 조금 더 구체적으로 적어주세요."
             )
@@ -360,24 +426,90 @@ class IntakeService:
             **deterministic,
         }
 
+    @staticmethod
+    def _self_reported_age(text: str) -> int | None:
+        """지원자 본인의 나이만 뽑는다. 확신할 수 없으면 None.
+
+        후보가 하나면 그대로 쓴다. 여럿이면 본인 지칭 단서가 붙은 것만 고른다.
+        단서가 없거나 둘 이상이면 판단을 포기한다. 가족·자녀·반려동물 나이를
+        본인 나이로 확정하는 것보다 비워 두는 편이 낫다.
+        """
+        matches = list(re.finditer(r"(?:만\s*)?(\d{1,3})\s*(?:세|살)", text))
+        if not matches:
+            return None
+
+        # 1단계: 제3자 나이를 후보에서 뺀다. "5세 아이", "어머니가 70세" 처럼
+        # 가족·자녀·반려동물 나이가 본인 나이로 확정되는 것을 막는다.
+        others_after = re.compile(rf"^\s*(?:{OTHER_PERSON_WORDS})")
+        others_before = re.compile(rf"(?:{OTHER_PERSON_WORDS})\S{{0,3}}\s*$")
+        candidates = [
+            m
+            for m in matches
+            if not others_after.match(text[m.end() :])
+            and not others_before.search(text[max(0, m.start() - 14) : m.start()])
+        ]
+        if not candidates:
+            return None
+        if len(candidates) == 1:
+            return int(candidates[0].group(1))
+
+        # 2단계: 후보가 여럿이면 본인 지칭 단서가 붙은 하나만 고른다.
+        # 앞쪽 단서 "저는 41세", 뒤쪽 단서 "32세 여성" — 성별 표기는 본인을 가리킨다.
+        before = re.compile(r"(?:저는|제가|제\s*나이|본인은?|나는|만)\s*$")
+        after = re.compile(r"^\s*(?:여성|여자|남성|남자)")
+        cued = [
+            m
+            for m in candidates
+            if before.search(text[: m.start()]) or after.match(text[m.end() :])
+        ]
+        if len(cued) == 1:
+            return int(cued[0].group(1))
+        return None
+
+    @staticmethod
+    def _self_reported_sex(text: str) -> str | None:
+        """지원자 본인의 성별만 뽑는다. 확신할 수 없으면 None.
+
+        `남자친구`·`여자친구`·`여동생` 같은 말은 본인 성별이 아니다. 두 성별이
+        같이 나오면 판단을 포기한다.
+        """
+        cleaned = re.sub(r"(?:남자|여자)\s*친구|남동생|여동생|남편|아내|배우자", " ", text)
+        has_female = re.search(r"여성|여자", cleaned) is not None
+        has_male = re.search(r"남성|남자", cleaned) is not None
+        if has_female and has_male:
+            return None
+        if has_female:
+            return "female"
+        if has_male:
+            return "male"
+        return None
+
     @classmethod
     def _extract_common_values(
         cls, text: str, schema: dict[str, Any]
     ) -> dict[str, Any]:
-        """한국어 짧은 답변에서 명확한 공통 필드를 결정론적으로 추출한다."""
+        """한국어 짧은 답변에서 명확한 공통 필드를 결정론적으로 추출한다.
+
+        이 결과는 모델 추출값을 덮어쓴다. 그래서 확신할 수 없으면 값을 만들지
+        않는 쪽이 안전하다. 예전에는 첫 번째 `\\d+세` 를 무조건 집어서
+        `5세 아이를 키우는 32세 여성` 의 나이를 5로 확정했고, 그 값이 모델의
+        정답(32)을 덮어썼다. 나이가 5로 굳으면 `18세 이상` 기준에서 방향이 틀린
+        부적격 판정이 나온다. 지금은 후보가 여럿이고 본인 지칭이 불분명하면
+        비워 두고 모델 추출값과 계정 프로필에 맡긴다.
+        """
         values: dict[str, Any] = {}
         properties = schema.get("properties", {})
-        age = re.search(r"(?:만\s*)?(\d{1,3})\s*(?:세|살)", text)
-        if age and "age" in properties:
-            values["age"] = int(age.group(1))
+        if "age" in properties:
+            age = cls._self_reported_age(text)
+            if age is not None:
+                values["age"] = age
         bmi = re.search(r"\bBMI\s*(?:는|가|=|:)?\s*(\d{1,2}(?:\.\d+)?)", text, re.I)
         if bmi and "bmi" in properties:
             values["bmi"] = float(bmi.group(1))
         if "sex" in properties:
-            if re.search(r"(?:성별은?\s*)?(?:여성|여자)", text):
-                values["sex"] = "female"
-            elif re.search(r"(?:성별은?\s*)?(?:남성|남자)", text):
-                values["sex"] = "male"
+            sex = cls._self_reported_sex(text)
+            if sex:
+                values["sex"] = sex
         if "prior_trial_participation" in properties:
             if re.search(
                 r"(?:임상\s*(?:시험|실험)|임상)(?:에|을|은|시험|실험)?[^.\n]{0,15}"
@@ -593,6 +725,10 @@ class IntakeService:
             "follow_up_count": record["follow_up_count"],
             "max_follow_ups": MAX_FOLLOW_UPS,
             "updated_at": record["updated_at"],
+            # 어떤 필드를 계정에서 채웠고 지원자 답변과 어긋난 곳이 있는지
+            # 드러낸다. 값이 어디서 왔는지 화면과 감사 양쪽에서 보여야 한다.
+            "account_profile_fields": list(record.get("account_profile_fields") or []),
+            "profile_conflicts": list(record.get("profile_conflicts") or []),
         }
 
     def _require_schema(self, schema_id: str) -> dict[str, Any]:

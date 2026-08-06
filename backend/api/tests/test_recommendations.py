@@ -281,7 +281,7 @@ def test_recommendation_runs_trials_concurrently_and_preserves_order() -> None:
             return SimpleNamespace(run=SimpleNamespace(trial_id=trial_id))
 
     class RankerStub:
-        def rank(self, outputs, *, trial_catalog, top_k):
+        def rank(self, outputs, *, trial_catalog, top_k, interest_areas=()):
             return ([{"trial_id": item.run.trial_id} for item in outputs], [])
 
     class RunStoreStub:
@@ -328,7 +328,7 @@ def test_recommendation_allows_empty_candidate_catalog() -> None:
             raise AssertionError("빈 후보 목록에서는 screening을 실행하면 안 됩니다")
 
     class RankerStub:
-        def rank(self, outputs, *, trial_catalog, top_k):
+        def rank(self, outputs, *, trial_catalog, top_k, interest_areas=()):
             assert outputs == []
             return ([], [])
 
@@ -372,7 +372,7 @@ def test_recommendation_passes_application_answers_only_to_its_trial() -> None:
             return SimpleNamespace(run=SimpleNamespace(trial_id=kwargs["trial_id"]))
 
     class RankerStub:
-        def rank(self, outputs, *, trial_catalog, top_k):
+        def rank(self, outputs, *, trial_catalog, top_k, interest_areas=()):
             return ([{"trial_id": item.run.trial_id} for item in outputs], [])
 
     class RunStoreStub:

@@ -31,9 +31,21 @@ class TrialRanker:
         *,
         trial_catalog: dict[str, dict[str, Any]],
         top_k: int,
+        interest_areas: tuple[str, ...] = (),
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """가입 설문의 관심 분야는 동점을 가르는 데만 쓴다.
+
+        정렬 키에서 관심 분야는 `trial_id` 알파벳순 **앞자리**에 들어간다. 즉
+        판정 결과·적합도 점수·사람 확인 필요 여부가 모두 같을 때만 순서가
+        바뀐다. 관심 분야로 후보를 걸러내지도 않는다 — 관심 목록에 없다고
+        빼버리면 실제로 적격인 공고가 사용자에게 보이지 않는다. 임상시험
+        매칭에서는 그 방향의 실수가 더 나쁘다.
+        """
+        tokens = self._interest_tokens(interest_areas)
         candidates = [
-            self._candidate(output, trial_catalog[output.run.trial_id])
+            self._candidate(
+                output, trial_catalog[output.run.trial_id], interest_tokens=tokens
+            )
             for output in outputs
         ]
         candidates.sort(
@@ -41,6 +53,7 @@ class TrialRanker:
                 _DECISION_ORDER[item["recommendation_decision"]],
                 -item["rank_score"],
                 item["human_review_required"],
+                -item["interest_match"],
                 item["trial_id"],
             )
         )
@@ -63,8 +76,34 @@ class TrialRanker:
             item["rank"] = None
         return recommended, excluded
 
+    @staticmethod
+    def _interest_tokens(interest_areas: tuple[str, ...]) -> tuple[str, ...]:
+        """`당뇨 · 내분비` 처럼 묶인 분야 이름을 낱개 단어로 쪼갠다."""
+        tokens: list[str] = []
+        for area in interest_areas:
+            for token in area.replace("·", " ").split():
+                cleaned = token.strip()
+                if len(cleaned) >= 2 and cleaned not in tokens:
+                    tokens.append(cleaned)
+        return tuple(tokens)
+
+    @staticmethod
+    def _interest_match(trial: dict[str, Any], tokens: tuple[str, ...]) -> int:
+        """공고 설명에 관심 분야 단어가 몇 개 나타나는지."""
+        if not tokens:
+            return 0
+        haystack = " ".join(
+            str(trial.get(key) or "")
+            for key in ("trial_name", "description", "condition", "intervention")
+        )
+        return sum(1 for token in tokens if token in haystack)
+
     def _candidate(
-        self, output: Any, trial: dict[str, Any]
+        self,
+        output: Any,
+        trial: dict[str, Any],
+        *,
+        interest_tokens: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         deliberation = output.run.metadata.get("deliberation", {})
         a2a_items = {
@@ -154,6 +193,9 @@ class TrialRanker:
             "overall_status": overall_status,
             "screening_decision": screening_decision,
             "recommendation_decision": recommendation_decision,
+            # 관심 분야와 겹친 단어 수. 동점일 때만 순서에 영향을 준다.
+            # 값을 노출해 두면 왜 이 순서인지 확인할 수 있다.
+            "interest_match": self._interest_match(trial, interest_tokens),
             "criteria_met": output.outcome.criteria_met,
             "criteria_total": output.outcome.criteria_total,
             "unresolved_criteria": unresolved,

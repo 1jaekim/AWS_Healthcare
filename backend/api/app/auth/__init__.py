@@ -22,6 +22,7 @@ from .dependencies import (
     require_admin,
 )
 from .principal import Principal
+from .profile import account_profile_values, interest_areas, korean_age
 
 __all__ = [
     "AdminUser",
@@ -33,9 +34,12 @@ __all__ = [
     "Principal",
     "SigningKeyResolver",
     "TokenRejected",
+    "account_profile_values",
     "build_auth_guard",
     "current_principal",
     "enforce_auth",
     "ensure_person_access",
+    "interest_areas",
+    "korean_age",
     "require_admin",
 ]

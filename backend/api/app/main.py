@@ -11,9 +11,11 @@ from agent.toolspec import tool_names
 from .auth import (
     AdminUser,
     CurrentUser,
+    account_profile_values,
     build_auth_guard,
     ensure_person_access,
     enforce_auth,
+    interest_areas as account_interest_areas,
 )
 from .config import settings
 from .container import Container, build_container
@@ -419,11 +421,15 @@ def start_application(
     payload: ApplicationStartRequest, container: Ctx, principal: CurrentUser
 ) -> dict:
     """첫 자연어 지원서를 추출하고 누락된 필드의 추가 작성 요청을 반환한다."""
+    # 가입 때 받은 생년월일·성별을 다시 묻지 않는다. 검증을 통과한 클레임에서
+    # 그때그때 읽고 지원서 초기값으로만 쓴다. 판정 사실의 출처는 계속 지원서다.
+    account_profile = account_profile_values(principal.claims)
     try:
         return container.application_intake.start_application(
             schema_id=payload.schema_id,
             application_text=payload.application_text,
             owner_sub=principal.subject,
+            account_profile=account_profile,
         )
     except ApplicationSchemaNotFound as exc:
         # 배포 전 인메모리 저장소가 발급한 결정론적 schema_id도 복구한다.
@@ -438,6 +444,7 @@ def start_application(
                     schema_id=payload.schema_id,
                     application_text=payload.application_text,
                     owner_sub=principal.subject,
+                    account_profile=account_profile,
                 )
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Application schema not found"
@@ -775,6 +782,9 @@ def run_recommendations(
             supplements_by_trial=supplements_by_trial,
             application_id=payload.application_id,
             owner_sub=principal.subject if payload.application_id else None,
+            # 가입 설문의 관심 분야. 동점을 가르는 데만 쓴다. 후보를 걸러내지
+            # 않으므로 관심 목록에 없는 적격 공고도 그대로 나온다.
+            interest_areas=account_interest_areas(principal.claims),
         )
     except PatientNotFound as exc:
         raise HTTPException(

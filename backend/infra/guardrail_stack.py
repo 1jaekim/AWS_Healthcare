@@ -57,7 +57,15 @@ class GuardrailStack(Stack):
                         {"Type": "EMAIL", "Action": "BLOCK"},
                         {"Type": "PHONE", "Action": "BLOCK"},
                         {"Type": "ADDRESS", "Action": "BLOCK"},
-                        {"Type": "AGE", "Action": "ANONYMIZE"},
+                        # AGE 는 넣지 않는다. 나이는 가려야 할 식별자가 아니라
+                        # 판정에 쓰는 기준 필드다. `AGE: ANONYMIZE` 를 켜 두면
+                        # 근거 서술이 이렇게 나온다.
+                        #
+                        #   "근거에 명시된 나이 {AGE}세는 {AGE}세 이상 조건을 충족함"
+                        #
+                        # 사람이 검토할 때 이 문장으로는 아무것도 확인할 수 없다.
+                        # 배포된 A2A Reviewer 응답에서 실제로 재현됐다. 나이가
+                        # 단독으로 개인을 식별하지도 않는다.
                         {"Type": "CREDIT_DEBIT_CARD_NUMBER", "Action": "BLOCK"},
                         {"Type": "INTERNATIONAL_BANK_ACCOUNT_NUMBER", "Action": "BLOCK"},
                     ],

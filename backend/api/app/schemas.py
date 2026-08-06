@@ -327,6 +327,8 @@ class RecommendedTrialOut(BaseModel):
     overall_status: Literal["MATCHED", "NEEDS_MORE_INFO", "EXCLUDED"]
     screening_decision: Literal["OK", "NOT_OK", "UNKNOWN"]
     recommendation_decision: Literal["OK", "NOT_OK", "UNKNOWN"]
+    interest_match: int = 0
+    """가입 설문 관심 분야와 겹친 단어 수. 동점일 때만 순서에 영향을 준다."""
     criteria_met: int
     criteria_total: int
     unresolved_criteria: list[str]
@@ -646,3 +648,7 @@ class ApplicationIntakeResponse(BaseModel):
     follow_up_count: int = Field(ge=0, le=5)
     max_follow_ups: int = 5
     updated_at: str
+    account_profile_fields: list[str] = Field(default_factory=list)
+    """가입 정보(생년월일·성별)에서 채운 필드. 지원자가 다시 쓰지 않아도 된다."""
+    profile_conflicts: list[dict[str, Any]] = Field(default_factory=list)
+    """계정 값과 지원자 답변이 어긋난 필드. 답변이 우선하지만 기록은 남긴다."""
