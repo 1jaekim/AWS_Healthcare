@@ -48,7 +48,8 @@ class ScreeningOutput:
     requests: list[dict[str, Any]]
     explanations: dict[str, Any]
     trace_summary: dict[str, Any]
-    review_ticket_id: str | None = None
+    human_review_criteria: tuple[str, ...] = ()
+    """사람이 직접 확인해야 하는 기준. 비어 있으면 자동 판정으로 충분하다."""
 
 
 class ScreeningOrchestrator:
@@ -234,7 +235,7 @@ class ScreeningOrchestrator:
             explanations=explanations,
         )
 
-        ticket_id = self._maybe_open_review(run, outcome, actor)
+        human_review = self._human_review_criteria(run, actor)
 
         self._audit.record(
             "RUN_COMPLETED",
@@ -256,7 +257,7 @@ class ScreeningOrchestrator:
             requests=requests,
             explanations=explanations,
             trace_summary=self._trace.summary_for(run_id),
-            review_ticket_id=ticket_id,
+            human_review_criteria=human_review,
         )
 
     def _record_guardrail_events(
@@ -510,18 +511,46 @@ class ScreeningOrchestrator:
             prepared.append((bundle, verification))
 
         judgments: list[Any | None] = [None] * len(prepared)
+        skipped_model: list[str] = []
         if self._judge is not None:
-            if hasattr(self._judge, "judge_many"):
-                judgments = list(
+            # 규칙이 이미 확정한 기준은 모델에 보내지 않는다.
+            #
+            # `RuleAggregator` 는 어차피 모델이 규칙보다 강한 결론을 내도 올려주지
+            # 않는다. 즉 `age >= 19` 에 그래프 값 41 이 있으면 답은 이미 나와 있고,
+            # 모델 호출은 결론에 기여하지 못한다. 오히려 어긋나면 CONFLICTING 으로
+            # A2A 를 발동시켜 모델을 더 부른다.
+            #
+            # 그래서 규칙 계산이 성립한 결정론적 기준은 `from_rule()` 로 판단을
+            # 승계한다. 검증·확정 경로는 그대로 지나가므로 판정은 바뀌지 않고
+            # 모델 왕복만 사라진다.
+            model_items: list[tuple[Any, Any]] = []
+            model_indexes: list[int] = []
+            for index, (bundle, verification) in enumerate(prepared):
+                if self._is_rule_settled(bundle):
+                    judgments[index] = self._judge.from_rule(
+                        bundle,
+                        verification,
+                        reason_suffix="규칙 계산으로 확정해 모델 판단을 생략했습니다.",
+                    )
+                    skipped_model.append(bundle.rule.criterion_id)
+                    continue
+                model_items.append((bundle, verification))
+                model_indexes.append(index)
+
+            if model_items and hasattr(self._judge, "judge_many"):
+                batch = list(
                     self._judge.judge_many(
-                        prepared,
+                        model_items,
                         run_id=context.run_id,
                         patient_key=context.patient_key,
                         index_date=context.index_date,
                     )
                 )
-            else:
-                judgments = [None] * len(prepared)
+                for offset, judgment in zip(model_indexes, batch):
+                    judgments[offset] = judgment
+
+        if skipped_model:
+            self._trace_note(context.run_id, skipped_model)
 
         results: list[CriterionResult] = []
         for index, (bundle, verification) in enumerate(prepared):
@@ -551,6 +580,36 @@ class ScreeningOrchestrator:
                 source_ids=list(result.source_ids),
             )
         return results
+
+    @staticmethod
+    def _is_rule_settled(bundle: Any) -> bool:
+        """규칙 계산만으로 결론이 나는 기준인지 판단한다.
+
+        두 조건을 모두 만족해야 한다.
+
+          1. 조건 종류가 결정론적이다 — 수치·시간창·범주형. 자유서술 해석이
+             필요한 DERIVED_BOOLEAN·NARRATIVE 는 규칙이 답을 못 낸다.
+          2. 규칙이 실제로 계산에 성공했다 — `outcome.satisfied` 가 True/False.
+             관찰값이 없으면 None 이고, 그때는 근거를 찾아야 하므로 모델이 필요하다.
+
+        1번만 보고 넘기면 값이 없는 수치 기준까지 모델을 건너뛰어, 자유서술에서
+        값을 찾을 기회를 잃는다. 그래서 2번이 반드시 함께 있어야 한다.
+        """
+        if not CriterionRouter.is_deterministic_only(bundle.rule):
+            return False
+        outcome = getattr(bundle, "outcome", None)
+        return outcome is not None and outcome.satisfied is not None
+
+    def _trace_note(self, run_id: str, skipped: list[str]) -> None:
+        """모델 판단을 생략한 기준을 스팬으로 남긴다. 비용·지연 분석의 근거다."""
+        with self._trace.span(
+            run_id,
+            "reason:judge_skipped",
+            "AGENT",
+            criterion_ids=sorted(skipped),
+            count=len(skipped),
+        ):
+            pass
 
     @staticmethod
     def _judgment_summary(
@@ -667,10 +726,27 @@ class ScreeningOrchestrator:
         )
         return decision
 
-    def _maybe_open_review(
-        self, run: ScreeningRun, outcome: AggregateOutcome, actor: str
-    ) -> str | None:
-        """검토가 필요한 실행이면 큐 항목을 만든다."""
+    def _human_review_criteria(
+        self, run: ScreeningRun, actor: str
+    ) -> tuple[str, ...]:
+        """사람이 직접 확인해야 하는 기준을 고른다.
+
+        예전에는 여기서 검토 큐 티켓을 만들었다. 그 큐는 Lambda 메모리에 있어
+        콜드 스타트마다 비워지고, 읽는 화면도 없었다. 쌓이지 않고 아무도 보지
+        않는 큐는 안전장치가 아니라 안전장치처럼 보이는 코드다.
+
+        대신 어떤 기준이 왜 사람 손을 필요로 하는지 판정 결과에 담아 돌려준다.
+        티켓 ID 하나보다 정보량이 많고, 검토 화면이 필요해지면 판정을 조회해
+        만들면 된다. 영속 저장이 필요해지면 그때 DynamoDB 로 만드는 것이 맞다.
+
+        두 종류를 합친다.
+
+          1. 규칙 계층이 검토로 표시한 기준 (REVIEW_REQUIRED · CONFLICTING)
+          2. A2A 교차 검토가 합의에 이르지 못한 미해소 기준
+
+        2번이 A2A 를 살려두는 이유다. 근거가 없어서 판정불가인 것과 두 검토자의
+        판단이 갈려서 판정불가인 것은 다른 상황이고, 후자는 질문으로 풀리지 않는다.
+        """
         needs_review = {
             item.criterion_id
             for item in run.results
@@ -696,24 +772,18 @@ class ScreeningOrchestrator:
                 and recommendations.get(item.criterion_id) not in {"OK", "NOT_OK"}
             )
         if not needs_review:
-            return None
-        ticket = self._runs.open_ticket(
-            run_id=run.run_id,
-            person_id=run.person_id,
-            trial_id=run.trial_id,
-            criterion_ids=sorted(needs_review),
-        )
+            return ()
+
+        criterion_ids = tuple(sorted(needs_review))
         self._audit.record(
-            "REVIEW_DECIDED",
+            "HUMAN_REVIEW_FLAGGED",
             actor=actor,
             run_id=run.run_id,
             person_id=run.person_id,
             trial_id=run.trial_id,
-            ticket_id=ticket.ticket_id,
-            status="PENDING",
-            criterion_ids=sorted(needs_review),
+            criterion_ids=list(criterion_ids),
         )
-        return ticket.ticket_id
+        return criterion_ids
 
     def run_batch(
         self, *, person_ids: list[int], trial_id: str, actor: str = "system"

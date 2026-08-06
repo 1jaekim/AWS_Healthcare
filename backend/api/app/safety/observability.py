@@ -12,6 +12,7 @@ from collections import defaultdict, deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from threading import RLock
 from typing import Any, Iterator, Literal
 
 SpanKind = Literal["AGENT", "TOOL", "MODEL", "GUARDRAIL", "STORE"]
@@ -38,6 +39,11 @@ class TraceCollector:
     def __init__(self, *, max_runs: int = 500) -> None:
         self._spans: dict[str, list[Span]] = defaultdict(list)
         self._order: deque[str] = deque(maxlen=max_runs)
+        # 추천은 공고별 스크리닝을 스레드로 병렬 실행하고, 설명 생성도 대상별로
+        # 동시에 돈다. 여러 스레드가 같은 보관소에 스팬을 넣으므로 락이 필요하다.
+        # 없으면 _order 등록과 _evict 의 삭제가 겹쳐 방금 시작한 run 의 스팬이
+        # 사라지거나 KeyError 가 난다.
+        self._lock = RLock()
 
     @contextmanager
     def span(
@@ -64,22 +70,23 @@ class TraceCollector:
             raise
         finally:
             duration = (time.perf_counter() - started) * 1000
-            if run_id not in self._spans:
-                self._order.append(run_id)
-            self._spans[run_id].append(
-                Span(
-                    span_id=f"SPAN-{uuid.uuid4().hex[:12]}",
-                    run_id=run_id,
-                    name=name,
-                    kind=kind,
-                    started_at=started_at,
-                    duration_ms=round(duration, 3),
-                    status=status,
-                    error=error,
-                    attributes={**attributes, **extra},
+            with self._lock:
+                if run_id not in self._spans:
+                    self._order.append(run_id)
+                self._spans[run_id].append(
+                    Span(
+                        span_id=f"SPAN-{uuid.uuid4().hex[:12]}",
+                        run_id=run_id,
+                        name=name,
+                        kind=kind,
+                        started_at=started_at,
+                        duration_ms=round(duration, 3),
+                        status=status,
+                        error=error,
+                        attributes={**attributes, **extra},
+                    )
                 )
-            )
-            self._evict()
+                self._evict()
 
     def _evict(self) -> None:
         """보관 한도를 넘은 run 의 스팬을 제거한다."""
@@ -89,11 +96,14 @@ class TraceCollector:
                 del self._spans[run_id]
 
     def spans_for(self, run_id: str) -> list[dict[str, Any]]:
-        return [asdict(span) for span in self._spans.get(run_id, [])]
+        with self._lock:
+            return [asdict(span) for span in self._spans.get(run_id, [])]
 
     def summary_for(self, run_id: str) -> dict[str, Any]:
         """지연시간·에러 집계. CloudWatch 메트릭에 대응한다."""
-        spans = self._spans.get(run_id, [])
+        # 쓰기가 진행 중인 목록을 그대로 순회하면 집계가 흔들린다. 스냅샷을 뜬다.
+        with self._lock:
+            spans = list(self._spans.get(run_id, []))
         if not spans:
             return {
                 "run_id": run_id,

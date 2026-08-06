@@ -15,6 +15,13 @@ from .store import IntakeStore
 SUPPORTED_TYPES = {"string", "integer", "number", "boolean", "array"}
 MAX_DYNAMIC_FIELDS = 64
 MAX_FOLLOW_UPS = 5
+FIELD_SOURCES = {"base", "trial_notice", "notice_llm"}
+"""`x-source` 로 허용되는 값.
+
+  - `base`         고정 기본 항목
+  - `trial_notice` 공고의 기준 JSON 에서 결정론적으로 파생된 항목. 판정 입력이 된다
+  - `notice_llm`   공고문 자유 텍스트에서 LLM 이 추가한 항목
+"""
 BASE_PROPERTIES: dict[str, dict[str, Any]] = {
     "age": {
         "type": "integer",
@@ -395,11 +402,17 @@ class IntakeService:
         field_type = str(raw.get("type", "string"))
         if field_type not in SUPPORTED_TYPES:
             raise InvalidGeneratedSchema(f"지원하지 않는 필드 타입입니다: {field_type}")
+        # 출처는 화이트리스트로만 받는다. 모델 출력이 그대로 들어오면 판정에
+        # 반영되는 기준 파생 항목으로 위장할 수 있다. 프롬프트에 없는 키(`x_source`)
+        # 를 쓰는 것도 같은 이유다.
+        declared_source = str(raw.get("x_source") or "").strip()
         spec: dict[str, Any] = {
             "type": field_type,
             "title": str(raw.get("title") or name),
             "description": str(raw.get("description") or raw.get("title") or name),
-            "x-source": "trial_notice",
+            "x-source": (
+                declared_source if declared_source in FIELD_SOURCES else "trial_notice"
+            ),
         }
         choices = raw.get("enum")
         if isinstance(choices, list) and choices:

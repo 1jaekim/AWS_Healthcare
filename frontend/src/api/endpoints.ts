@@ -22,7 +22,6 @@ import type {
   PatientDetail,
   PatientListResponse,
   RecommendationRun,
-  ReviewTicket,
   ScreeningRun,
   TimelineResponse,
   TrialDetail,
@@ -262,11 +261,8 @@ export const api = {
       ? mockApi.getCohort(trialId)
       : http.get<CohortResponse>(`/api/v1/cohort/${encodeURIComponent(trialId)}`),
 
-  listReviewQueue: (status?: string, trialId?: string): Promise<ReviewTicket[]> =>
-    http.get<ReviewTicket[]>('/api/v1/review-queue', {
-      status,
-      trial_id: trialId,
-    }),
+  // 검토 큐(`/api/v1/review-queue`)는 제거했다. 사람 확인이 필요한 기준은
+  // 판정 응답의 `human_review_criteria` 에 들어 있다.
 
   getAudit: (runId: string): Promise<AuditEvent[]> =>
     http.get<AuditEvent[]>(`/api/v1/audit/${encodeURIComponent(runId)}`),

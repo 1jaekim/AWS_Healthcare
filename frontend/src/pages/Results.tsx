@@ -22,9 +22,12 @@ import { ErrorNote, Loading } from '../components/ui'
 import { useAuth } from '../auth/AuthContext'
 import {
   allTrials,
-  fitScore,
-  STATUS_LABEL,
+  UNRESOLVED_NOTE,
+  unresolvedKindOf,
   useMatching,
+  verdictClass,
+  verdictOf,
+  VERDICT_NOTE,
 } from '../state/MatchingContext'
 
 const DECISION_LABEL = {
@@ -52,6 +55,7 @@ function CriterionRow({
   judgment?: JudgmentItem
 }) {
   const label = DECISION_LABEL[criterion.screening_status]
+  const unresolvedKind = unresolvedKindOf(criterion)
   const failed =
     judgment?.verification?.checks.filter((check) => !check.passed) ?? []
   const patientReported = criterion.evidence_ids.some((id) => id.startsWith('APP-'))
@@ -79,9 +83,29 @@ function CriterionRow({
             ? '지원자 답변 근거 · 의료 기록 확인 필요'
             : criterion.evidence_ids.length
               ? '의료 기록 근거 확인됨'
-              : '추가 확인 필요'}
-          {criterion.a2a_applied ? ' · 교차 검토 반영' : ''}
+              : '기록 근거 없음'}
+          {criterion.a2a_applied ? ' · 교차 검토 합의' : ''}
         </div>
+
+        {/*
+          판정불가는 한 덩어리가 아니다. 질문으로 풀리는 것과 사람이 봐야 하는 것을
+          갈라 보여준다. A2A 의 합의·그라운딩 결과가 그 근거다.
+        */}
+        {unresolvedKind ? (
+          <div
+            className={unresolvedKind === 'ASKABLE' ? 'muted' : 'quote'}
+            style={{ fontSize: 12.5, marginTop: 6 }}
+          >
+            {UNRESOLVED_NOTE[unresolvedKind]}
+          </div>
+        ) : null}
+
+        {/* 두 검토자가 갈렸으면 양측 결론을 드러낸다. 근거를 숨기지 않는다. */}
+        {criterion.a2a && !criterion.a2a.agreement ? (
+          <div className="muted" style={{ fontSize: 12, marginTop: 3 }}>
+            교차 검토 — 찬성 {criterion.a2a.advocate} · 반론 {criterion.a2a.skeptic}
+          </div>
+        ) : null}
 
         {/* 모델 제안과 최종 상태가 갈린 경우만 드러낸다. 같으면 잡음이다. */}
         {judgment?.proposed && judgment.proposed !== criterion.screening_status ? (
@@ -121,9 +145,9 @@ function ResultCard({
   onToggle: () => void
 }) {
   const navigate = useNavigate()
-  const excluded = trial.overall_status === 'EXCLUDED'
+  const verdict = verdictOf(trial)
+  const excluded = verdict === '불가능'
   const unresolved = trial.unresolved_criteria.length
-  const unmet = trial.criteria.filter((c) => c.screening_status === 'NOT_OK').length
 
   const judgmentItems: JudgmentItem[] =
     detail && 'items' in detail.judgment
@@ -140,44 +164,28 @@ function ResultCard({
             {trial.title}
           </div>
           <div className="row-meta">
-            {TRIAL_META[trial.trial_id] ?? trial.trial_id} · {trial.selection_reason}
+            {TRIAL_META[trial.trial_id] ?? trial.trial_id}
           </div>
         </div>
-        <div style={{ fontSize: 13 }}>
-          <span style={{ fontWeight: 600 }}>충족 {trial.criteria_met}</span>
-          <span style={{ opacity: 0.55 }}> · </span>
-          <span
-            className={unresolved ? 'dotted' : undefined}
-            style={{ fontWeight: unresolved ? 600 : 400, opacity: unresolved ? 1 : 0.55 }}
-          >
-            확인필요 {unresolved}
-          </span>
-          <span style={{ opacity: 0.55 }}> · </span>
-          <span style={{ fontWeight: unmet ? 600 : 400, opacity: unmet ? 1 : 0.55 }}>
-            미충족 {unmet}
-          </span>
+        <div className="muted" style={{ fontSize: 12.5 }}>
+          {verdict ? VERDICT_NOTE[verdict] : ''}
         </div>
-        <div
-          style={{
-            textAlign: 'right',
-            fontSize: 13,
-            fontWeight: 600,
-            opacity: excluded ? 0.6 : 1,
-          }}
-        >
-          {excluded ? '제외' : `적합도 ${fitScore(trial)}`}
+        <div style={{ textAlign: 'right' }}>
+          <span className={verdictClass(verdict)}>{verdict}</span>
         </div>
       </button>
 
       {open ? (
         <div style={{ padding: 'var(--space-3) var(--space-2) var(--space-4)' }}>
           <div className="kicker" style={{ marginBottom: 'var(--space-3)' }}>
-            기준별 판정 · 종합 {STATUS_LABEL[trial.overall_status]}
+            판정 근거 · 종합 {verdict}
           </div>
 
           {trial.human_review_required ? (
             <div className="banner banner-warn" style={{ marginBottom: 'var(--space-4)' }}>
-              확인되지 않은 기준이 있어 사람 검토가 필요합니다.
+              연구간호사가 직접 확인해야 하는 기준이{' '}
+              {trial.human_review_criteria.length || trial.unresolved_criteria.length}건
+              있습니다. 지원서 답변으로는 확정되지 않습니다.
             </div>
           ) : null}
 
@@ -201,15 +209,6 @@ function ResultCard({
               </div>
             ) : null}
           </div>
-
-          {/* 추천 판정이 원래 판정과 다르면 A2A 가 개입한 것이다. 구분해 보여준다. */}
-          {trial.recommendation_decision !== trial.screening_decision ? (
-            <p className="muted" style={{ fontSize: 12.5, margin: 'var(--space-4) 0 0' }}>
-              스크리닝 판정 {trial.screening_decision} · 추천 판정{' '}
-              {trial.recommendation_decision} — A2A 합의가 추천 정렬에만 반영되었고
-              원래 판정은 보존되었습니다.
-            </p>
-          ) : null}
 
           {detail?.supplements?.source_application_id ? (
             <p className="muted" style={{ fontSize: 12.5, margin: 'var(--space-2) 0 0' }}>
@@ -251,28 +250,33 @@ export default function Results() {
   const { trialId } = useParams<{ trialId?: string }>()
   const { account } = useAuth()
   const navigate = useNavigate()
-  const { recommendation, runs, busy, error, run, loadRunDetail } = useMatching()
+  const { recommendation, runs, screened, busy, error, run, loadRunDetail } =
+    useMatching()
   const [openId, setOpenId] = useState<string | null>(trialId ?? null)
   const personId = account?.personId ?? null
 
+  // 지원서를 낸 공고로 들어왔고 그 판정을 이미 받았으면 추천을 돌리지 않는다.
+  // 이 화면이 보여줄 것은 그 한 건이고, 전체 재판정은 순수한 낭비다.
+  const focused = trialId ? screened[trialId] : undefined
+
   useEffect(() => {
-    if (recommendation) return
+    if (focused || recommendation) return
     // 전체 후보를 보려는 화면이므로 top_k 를 넉넉히 잡는다.
     if (personId !== null) void run(personId, 20)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [personId])
+  }, [personId, focused])
 
-  const entries = allTrials(recommendation)
+  const entries = focused ? [focused] : allTrials(recommendation)
 
-  // 펼친 행의 판단 검증 상세만 따로 가져온다.
+  // 펼친 행의 판단 검증 상세만 따로 가져온다. 지원서로 받은 판정은
+  // recordScreening 이 이미 상세를 채워두므로 여기서 다시 부르지 않는다.
   useEffect(() => {
     if (!openId) return
     const target = entries.find((trial) => trial.trial_id === openId)
-    if (target) void loadRunDetail(target.run_id)
+    if (target && !runs[target.run_id]) void loadRunDetail(target.run_id)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openId, recommendation])
+  }, [openId, recommendation, focused])
 
-  const recommended = recommendation?.recommended_trials ?? []
 
   return (
     <div className="page-wide">
@@ -280,9 +284,7 @@ export default function Results() {
         <AppHeader />
         <div style={{ padding: 'var(--space-6) var(--space-8) var(--space-8)' }}>
           <div className="row-baseline" style={{ marginBottom: 'var(--space-2)' }}>
-            <h2 style={{ margin: 0, fontSize: 30 }}>
-              추천 임상시험 {recommended.length}건
-            </h2>
+            <h2 style={{ margin: 0, fontSize: 30 }}>판정 결과</h2>
           </div>
 
           <p
@@ -293,9 +295,11 @@ export default function Results() {
               maxWidth: '60ch',
             }}
           >
-            후보 {recommendation?.evaluated_trials ?? 0}건을 공고별 선정·제외 기준과
-            대조한 결과입니다. 확인필요 항목이 남아 있으면 신청 전 연구간호사가 다시
-            확인합니다.
+            {focused
+              ? '제출한 지원서와 진료 기록을 이 공고의 선정·제외 기준과 대조한 결과입니다.'
+              : `공고 ${recommendation?.evaluated_trials ?? 0}건을 선정·제외 기준과 대조한 결과입니다.`}{' '}
+            결과는 가능 · 불가능 · 판정불가 세 가지이며, 판정불가는 기록만으로 확인되지
+            않은 기준이 남은 경우입니다. 신청 전 연구간호사가 다시 확인합니다.
           </p>
 
           {busy ? <Loading label="판정 중입니다" /> : null}

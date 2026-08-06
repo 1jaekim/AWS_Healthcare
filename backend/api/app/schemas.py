@@ -278,7 +278,8 @@ class ScreeningRunResponse(BaseModel):
     blocking_criteria: list[str]
     open_criteria: list[str]
     review_criteria: list[str]
-    review_ticket_id: str | None = None
+    human_review_criteria: list[str] = Field(default_factory=list)
+    """사람이 직접 확인해야 하는 기준. 규칙이 표시한 검토 대상과 A2A 미합의를 합친다."""
     mode: str = "deterministic"
     agent: dict[str, Any] = Field(default_factory=dict)
     deliberation: dict[str, Any] = Field(default_factory=dict)
@@ -329,7 +330,7 @@ class RecommendedTrialOut(BaseModel):
     criteria_total: int
     unresolved_criteria: list[str]
     human_review_required: bool
-    review_ticket_id: str | None = None
+    human_review_criteria: list[str] = Field(default_factory=list)
     selection_reason: str
     a2a: dict[str, Any] = Field(default_factory=dict)
     criteria: list[RecommendationCriterionOut]
@@ -467,25 +468,6 @@ class AnswerResponse(BaseModel):
     intake: IntakeResultOut | None = None
 
 
-class ReviewTicketOut(BaseModel):
-    ticket_id: str
-    run_id: str
-    person_id: int
-    trial_id: str
-    criterion_ids: list[str]
-    status: Literal["PENDING", "APPROVED", "REJECTED", "RERUN_REQUESTED"]
-    created_at: str
-    decided_at: str | None = None
-    decided_by: str | None = None
-    note: str | None = None
-
-
-class ReviewDecisionRequest(BaseModel):
-    decision: Literal["APPROVED", "REJECTED", "RERUN_REQUESTED"]
-    decided_by: str = Field(min_length=1)
-    note: str | None = None
-
-
 class TrialReviewItemOut(BaseModel):
     trial_id: str
     source_key: str
@@ -609,6 +591,13 @@ class ApplicationSchemaResponse(BaseModel):
     json_schema: dict[str, Any]
     mode: str
     created_at: str
+    augmentation: dict[str, Any] | None = None
+    """공고문 파생 필드(3층) 생성 결과.
+
+    `status` 는 generated · cached · skipped · failed 중 하나다. 이 값이 없거나
+    `skipped`·`failed` 면 스키마는 기본 항목과 기준 파생 항목만으로 만들어졌다.
+    화면이 "공고문에서 추가로 확인하는 항목" 을 표시할지 결정하는 근거다.
+    """
 
 
 class BaseApplicationSchemaResponse(BaseModel):

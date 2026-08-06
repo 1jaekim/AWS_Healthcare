@@ -53,12 +53,24 @@ TRIALS = [
 
 CRITERIA = [
     # trial_id, criterion_id, type, field, operator, low, high, unit
+    #
+    # `field` 는 FIELD_CATALOG 의 키여야 한다. 측정 컬럼 이름(`hba1c_pct`)이 아니다.
+    # TimelineGraphTool 의 _MEASUREMENT_COLUMNS 가 카탈로그 키를 측정 컬럼으로
+    # 옮겨주므로, 여기에 컬럼 이름을 적으면 spec_for() 가 카탈로그를 못 찾아
+    # 조건이 NARRATIVE 로 떨어진다. 그러면 그래프 조회와 규칙 계산을 건너뛰고
+    # 자유서술 검색으로만 확인하게 되어, 색인이 비어 있는 동안 전부 UNKNOWN 이
+    # 된다. 지원서 스키마의 기준 파생 항목도 만들어지지 않는다.
+    #
+    # EXCLUSION 은 '위험 없음' 조건으로 적는다. 규칙 충족이 곧 통과라는 규약이다
+    # (aggregator._resolve_status, judgment._check_criterion_type 참고).
+    # "eGFR 45 미만은 제외" 는 `egfr >= 45` 로 적어야 한다. `egfr < 45` 로 적으면
+    # 방향이 뒤집혀, eGFR 이 정상인 환자가 CONTRADICTED 로 차단된다.
     ("SEED-T2D-001", "inc_age_001", "INCLUSION", "age", ">=", "19", "", "years"),
-    ("SEED-T2D-001", "inc_hba1c_001", "INCLUSION", "hba1c_pct", "between", "7.0", "11.0", "%"),
-    ("SEED-T2D-001", "exc_egfr_001", "EXCLUSION", "egfr_ml_min_1_73m2", "<", "45", "", "mL/min/1.73m2"),
+    ("SEED-T2D-001", "inc_hba1c_001", "INCLUSION", "hba1c", "between", "7.0", "11.0", "%"),
+    ("SEED-T2D-001", "exc_egfr_001", "EXCLUSION", "egfr", ">=", "45", "", "mL/min/1.73m2"),
     ("SEED-CKD-002", "inc_age_002", "INCLUSION", "age", ">=", "19", "", "years"),
-    ("SEED-CKD-002", "inc_uacr_002", "INCLUSION", "uacr_mg_g", ">=", "30", "", "mg/g"),
-    ("SEED-CKD-002", "exc_egfr_002", "EXCLUSION", "egfr_ml_min_1_73m2", "<", "25", "", "mL/min/1.73m2"),
+    ("SEED-CKD-002", "inc_uacr_002", "INCLUSION", "uacr", ">=", "30", "", "mg/g"),
+    ("SEED-CKD-002", "exc_egfr_002", "EXCLUSION", "egfr", ">=", "25", "", "mL/min/1.73m2"),
 ]
 
 

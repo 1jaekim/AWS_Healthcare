@@ -10,11 +10,9 @@ import copy
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any
 
 from ..domain.models import ScreeningRun
-
-ReviewDecision = Literal["APPROVED", "REJECTED", "RERUN_REQUESTED"]
 
 
 def _now() -> str:
@@ -51,36 +49,6 @@ class Answer:
 
 
 @dataclass
-class ReviewTicket:
-    """검토 큐 항목."""
-
-    ticket_id: str
-    run_id: str
-    person_id: int
-    trial_id: str
-    criterion_ids: list[str]
-    status: Literal["PENDING", "APPROVED", "REJECTED", "RERUN_REQUESTED"]
-    created_at: str
-    decided_at: str | None = None
-    decided_by: str | None = None
-    note: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "ticket_id": self.ticket_id,
-            "run_id": self.run_id,
-            "person_id": self.person_id,
-            "trial_id": self.trial_id,
-            "criterion_ids": list(self.criterion_ids),
-            "status": self.status,
-            "created_at": self.created_at,
-            "decided_at": self.decided_at,
-            "decided_by": self.decided_by,
-            "note": self.note,
-        }
-
-
-@dataclass
 class RunArtifacts:
     """실행에 딸린 산출물. 패킷·질문·설명을 함께 보관한다."""
 
@@ -96,7 +64,6 @@ class RunStore:
         self._runs: dict[str, ScreeningRun] = {}
         self._artifacts: dict[str, RunArtifacts] = {}
         self._answers: dict[str, list[Answer]] = {}
-        self._tickets: dict[str, ReviewTicket] = {}
         self._latest: dict[tuple[int, str], str] = {}
         self._recommendations: dict[str, dict[str, Any]] = {}
 
@@ -186,65 +153,9 @@ class RunStore:
     def answers_for(self, run_id: str) -> list[Answer]:
         return list(self._answers.get(run_id, []))
 
-    def open_ticket(
-        self, *, run_id: str, person_id: int, trial_id: str, criterion_ids: list[str]
-    ) -> ReviewTicket:
-        """검토 필요 실행에 대해 큐 항목을 만든다. 실행당 하나만 유지한다."""
-        for ticket in self._tickets.values():
-            if ticket.run_id == run_id and ticket.status == "PENDING":
-                ticket.criterion_ids = criterion_ids
-                return ticket
-        ticket = ReviewTicket(
-            ticket_id=f"RVW-{uuid.uuid4().hex[:12]}",
-            run_id=run_id,
-            person_id=person_id,
-            trial_id=trial_id,
-            criterion_ids=list(criterion_ids),
-            status="PENDING",
-            created_at=_now(),
-        )
-        self._tickets[ticket.ticket_id] = ticket
-        return ticket
-
-    def get_ticket(self, ticket_id: str) -> ReviewTicket | None:
-        return self._tickets.get(ticket_id)
-
-    def list_tickets(
-        self, *, status: str | None = None, trial_id: str | None = None
-    ) -> list[ReviewTicket]:
-        items = [
-            ticket
-            for ticket in self._tickets.values()
-            if (status is None or ticket.status == status)
-            and (trial_id is None or ticket.trial_id == trial_id)
-        ]
-        items.sort(key=lambda item: item.created_at, reverse=True)
-        return items
-
-    def decide_ticket(
-        self,
-        ticket_id: str,
-        *,
-        decision: ReviewDecision,
-        decided_by: str,
-        note: str | None = None,
-    ) -> ReviewTicket | None:
-        ticket = self._tickets.get(ticket_id)
-        if ticket is None:
-            return None
-        ticket.status = decision
-        ticket.decided_at = _now()
-        ticket.decided_by = decided_by
-        ticket.note = note
-        return ticket
-
     def counts(self) -> dict[str, int]:
         return {
             "runs": len(self._runs),
             "answers": sum(len(items) for items in self._answers.values()),
-            "review_tickets": len(self._tickets),
             "recommendations": len(self._recommendations),
-            "pending_reviews": sum(
-                1 for item in self._tickets.values() if item.status == "PENDING"
-            ),
         }

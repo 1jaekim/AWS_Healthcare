@@ -6,7 +6,7 @@ import { useNavigate } from 'react-router-dom'
 import type { RecommendationCriterion } from '../api/types'
 import AppHeader from '../components/AppHeader'
 import { useAuth } from '../auth/AuthContext'
-import { allTrials, STATUS_LABEL, useMatching } from '../state/MatchingContext'
+import { allTrials, useMatching, verdictOf } from '../state/MatchingContext'
 
 export default function Report() {
   const { account } = useAuth()
@@ -15,8 +15,10 @@ export default function Report() {
 
   const rows = allTrials(recommendation)
 
-  const matched = rows.filter((row) => row.overall_status === 'MATCHED').length
-  const needsInfo = rows.filter((row) => row.overall_status === 'NEEDS_MORE_INFO').length
+  // 집계도 화면 배지와 같은 기준(verdictOf → screening_decision)을 쓴다.
+  // overall_status 는 A2A 합의가 반영되어 배지와 갈릴 수 있다.
+  const matched = rows.filter((row) => verdictOf(row) === '가능').length
+  const needsInfo = rows.filter((row) => verdictOf(row) === '판정불가').length
   const review = rows.filter((row) => row.human_review_required).length
 
   /**
@@ -102,32 +104,33 @@ export default function Report() {
             <thead>
               <tr>
                 <th>임상시험</th>
-                <th>종합</th>
-                <th>충족</th>
-                <th>확인필요</th>
-                <th>적합도</th>
+                <th>판정</th>
+                <th>확인된 기준</th>
+                <th>확인되지 않은 기준</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => {
-                const excluded = row.overall_status === 'EXCLUDED'
+                const verdict = verdictOf(row)
                 return (
-                  <tr key={row.trial_id} style={excluded ? { opacity: 0.6 } : undefined}>
+                  <tr
+                    key={row.trial_id}
+                    style={verdict === '불가능' ? { opacity: 0.6 } : undefined}
+                  >
                     <td>{row.title}</td>
-                    <td style={{ fontWeight: excluded ? 400 : 600 }}>
-                      {STATUS_LABEL[row.overall_status]}
+                    <td style={{ fontWeight: verdict === '불가능' ? 400 : 600 }}>
+                      {verdict}
                     </td>
                     <td>
                       {row.criteria_met} / {row.criteria_total}
                     </td>
                     <td>{row.unresolved_criteria.length}</td>
-                    <td>{Math.round(row.rank_score * 100)}</td>
                   </tr>
                 )
               })}
               {!rows.length ? (
                 <tr>
-                  <td colSpan={5} className="muted">
+                  <td colSpan={4} className="muted">
                     아직 실행된 판정이 없습니다.
                   </td>
                 </tr>
@@ -176,9 +179,10 @@ export default function Report() {
             maxWidth: '60ch',
           }}
         >
-          적합도는 모델이 만든 값이 아니라 판정 상태에 따라 코드에 고정된 점수입니다.
-          이 보고서는 참여 가능성을 사전 검토한 자료이며 최종 선정은 실시기관의 사전
-          문진과 검사로 결정됩니다. 보고서에는 이름·연락처가 포함되지 않습니다.
+          판정은 가능 · 불가능 · 판정불가 세 가지이며, 규칙 계층이 확정합니다. 모델은
+          제안만 하고 상태를 올리지 못합니다. 이 보고서는 참여 가능성을 사전 검토한
+          자료이며 최종 선정은 실시기관의 사전 문진과 검사로 결정됩니다. 보고서에는
+          이름·연락처가 포함되지 않습니다.
         </p>
 
         <div style={{ display: 'flex', gap: 'var(--space-2)' }}>

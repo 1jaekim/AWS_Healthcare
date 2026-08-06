@@ -10,9 +10,9 @@ import { Chips, ErrorNote, Loading } from '../components/ui'
 import { useAuth } from '../auth/AuthContext'
 import {
   allTrials,
-  fitScore,
   useMatching,
-  verdictSummary,
+  verdictClass,
+  verdictOf,
 } from '../state/MatchingContext'
 
 const ALL = '전체'
@@ -64,6 +64,8 @@ export default function Home() {
   }, [fields, filter, showAllFields])
 
   const top = recommendation?.recommended_trials ?? []
+  // 헤드라인은 "가능" 으로 확정된 건수만 센다. 판정불가를 섞으면 가능한 것처럼 읽힌다.
+  const possibleCount = everything.filter((trial) => verdictOf(trial) === '가능').length
   // "전체 모집공고"는 추천 실행 결과가 아니라 승인 공고 원장을 기준으로 한다.
   // 승인 직후 아직 판정되지 않은 공고도 여기에는 즉시 보여야 한다.
   const shown = trials.filter(
@@ -84,10 +86,15 @@ export default function Home() {
    * 공고를 클릭하면 그 공고의 지원서 챗으로 들어간다. 공고의 선정·제외 기준에서
    * 파생된 항목을 묻고, 빠진 항목만 이어서 확인한다.
    *
-   * 확정 제외된 공고는 지원서를 받을 이유가 없으므로 판정 상세로 보낸다.
+   * 불가능으로 확정된 공고는 지원서를 받을 이유가 없으므로 판정 근거로 보낸다.
+   *
+   * 분기 기준은 배지와 같은 `verdictOf()` 다. 예전에는 `overall_status` 를 봤는데,
+   * 그 값에는 A2A 합의가 반영되어 배지(screening_decision 기반)와 갈릴 수 있었다.
+   * 배지는 "판정불가" 인데 클릭하면 제외된 공고처럼 막히는 상태가 가능했다.
+   * 화면의 판정 기준은 하나여야 한다.
    */
   function openTrial(trial: RecommendedTrial) {
-    if (trial.overall_status === 'EXCLUDED') {
+    if (verdictOf(trial) === '불가능') {
       goDetail(trial)
       return
     }
@@ -107,9 +114,7 @@ export default function Home() {
 
         <div style={{ padding: 'var(--space-6) var(--space-8) var(--space-8)' }}>
           <h2 style={{ margin: '0 0 var(--space-2)', fontSize: 30, maxWidth: '26ch' }}>
-            {busy
-              ? '참여 가능성을 확인하고 있습니다'
-              : `참여 가능성이 높은 공고 ${top.length}건`}
+            {busy ? '참여 가능 여부를 확인하고 있습니다' : `참여 가능한 공고 ${possibleCount}건`}
           </h2>
 
           <div
@@ -146,14 +151,14 @@ export default function Home() {
             }}
           >
             {ranAt && recommendation
-              ? `${ranAt.toLocaleString('ko-KR')} 실행 · 후보 ${recommendation.evaluated_trials}건을 기준과 대조했습니다.`
+              ? `${ranAt.toLocaleString('ko-KR')} 실행 · 공고 ${recommendation.evaluated_trials}건을 기준과 대조했습니다.`
               : '실행 준비 중입니다.'}{' '}
             {openCount > 0 && top[0] ? (
               <Link
                 to={`/intake/${encodeURIComponent(top[0].trial_id)}`}
                 style={{ color: 'var(--color-accent-700)' }}
               >
-                확인필요 {openCount}건 답하기
+                판정불가 항목 답하기
               </Link>
             ) : null}
           </p>
@@ -172,15 +177,14 @@ export default function Home() {
                 <div>
                   <div className="row-title">{trial.title}</div>
                   <div className="row-meta">
-                    {TRIAL_META[trial.trial_id] ?? trial.trial_id} · {trial.selection_reason}
+                    {TRIAL_META[trial.trial_id] ?? trial.trial_id}
                   </div>
                 </div>
-                <div style={{ fontSize: 13 }}>{verdictSummary(trial)}</div>
+                <div />
                 <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: 15, fontWeight: 600 }}>{fitScore(trial)}</div>
-                  <div className="muted" style={{ fontSize: 11.5 }}>
-                    적합도
-                  </div>
+                  <span className={verdictClass(verdictOf(trial))}>
+                    {verdictOf(trial)}
+                  </span>
                 </div>
               </button>
             ))}
@@ -194,7 +198,7 @@ export default function Home() {
               style={{ minHeight: 42, marginTop: 0 }}
               onClick={() => top[0] && openTrial(top[0])}
             >
-              가장 적합한 공고 지원서 작성
+              지원서 작성
             </button>
             <button
               className="btn btn-secondary"
@@ -202,7 +206,7 @@ export default function Home() {
               style={{ minHeight: 42, marginTop: 0 }}
               onClick={() => navigate('/results')}
             >
-              기준별 판정 보기
+              판정 근거 보기
             </button>
             <button
               className="btn btn-ghost"
@@ -217,9 +221,8 @@ export default function Home() {
 
           {recommendation && recommendation.remaining_candidate_count > 0 ? (
             <p className="muted" style={{ fontSize: 12.5, margin: 'var(--space-4) 0 0' }}>
-              추천 상위 {recommendation.limits.top_k}건만 위에 보여집니다. 아래로
-              스크롤하면 나머지 {recommendation.remaining_candidate_count}건과 제외된
-              공고까지 볼 수 있습니다.
+              위에는 {recommendation.limits.top_k}건만 보여집니다. 아래로 스크롤하면
+              나머지 {recommendation.remaining_candidate_count}건까지 볼 수 있습니다.
             </p>
           ) : null}
 
@@ -256,7 +259,7 @@ export default function Home() {
                 key={trial.trial_id}
                 type="button"
                 className={
-                  verdict?.overall_status === 'EXCLUDED'
+                  verdictOf(verdict) === '불가능'
                     ? 'list-row list-row-all row-dim'
                     : 'list-row list-row-all'
                 }
@@ -271,9 +274,17 @@ export default function Home() {
                     {TRIAL_META[trial.trial_id] ?? trial.trial_id}
                   </div>
                 </div>
-                <div style={{ fontSize: 12.5 }}>{verdictSummary(verdict)}</div>
-                <div style={{ textAlign: 'right', fontSize: 13, fontWeight: 600 }}>
-                  {fitScore(verdict)}
+                <div />
+                <div style={{ textAlign: 'right' }}>
+                  {verdict ? (
+                    <span className={verdictClass(verdictOf(verdict))}>
+                      {verdictOf(verdict)}
+                    </span>
+                  ) : (
+                    <span className="muted" style={{ fontSize: 12.5 }}>
+                      판정 전
+                    </span>
+                  )}
                 </div>
               </button>
               )
@@ -288,8 +299,9 @@ export default function Home() {
             className="muted"
             style={{ fontSize: 12.5, margin: 'var(--space-6) 0 0', maxWidth: '64ch' }}
           >
-            제외로 표시된 공고는 제외 기준에 해당해 추천에서 뺀 것입니다. 확인필요
-            항목에 답하면 다음 실행에서 다시 평가합니다.
+            불가능은 충족하지 못한 기준이 확인된 경우입니다. 판정불가는 기록만으로
+            확인되지 않은 기준이 남은 경우이며, 지원서에서 그 항목에 답하면 다시
+            판정합니다.
           </p>
         </div>
       </div>

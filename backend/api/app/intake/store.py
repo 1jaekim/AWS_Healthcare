@@ -15,6 +15,7 @@ class IntakeStore:
     def __init__(self) -> None:
         self._schemas: dict[str, dict[str, Any]] = {}
         self._applications: dict[str, dict[str, Any]] = {}
+        self._notice_fields: dict[str, dict[str, Any]] = {}
         self._lock = RLock()
 
     def save_schema(self, record: dict[str, Any]) -> None:
@@ -33,6 +34,21 @@ class IntakeStore:
     def get_application(self, application_id: str) -> dict[str, Any] | None:
         with self._lock:
             value = self._applications.get(application_id)
+            return deepcopy(value) if value else None
+
+    # -- 공고문 파생 필드 캐시 ------------------------------------------------
+    #
+    # LLM 이 만든 확장 필드를 공고·기준 조합별로 보관한다. 캐시가 없으면 같은
+    # 공고를 다시 열 때마다 모델을 부르고, 출력이 조금만 흔들려도 `schema_id` 가
+    # 새로 생겨 화면이 매번 다른 질문을 받는다.
+
+    def save_notice_fields(self, cache_key: str, payload: dict[str, Any]) -> None:
+        with self._lock:
+            self._notice_fields[str(cache_key)] = deepcopy(payload)
+
+    def get_notice_fields(self, cache_key: str) -> dict[str, Any] | None:
+        with self._lock:
+            value = self._notice_fields.get(str(cache_key))
             return deepcopy(value) if value else None
 
 
@@ -91,3 +107,19 @@ class DynamoDBIntakeStore:
 
     def get_application(self, application_id: str) -> dict[str, Any] | None:
         return self._get(application_id)
+
+    # -- 공고문 파생 필드 캐시 ------------------------------------------------
+    #
+    # 인메모리 구현과 같은 계약을 운영 저장소에도 둔다. 이게 없으면
+    # `NoticeFieldAugmentor` 가 캐시를 못 찾아 조용히 캐시 없이 동작한다. 크래시는
+    # 안 나지만 공고를 열 때마다 Bedrock 을 다시 부르고, 출력이 흔들리면
+    # `schema_id` 가 매번 달라져 화면이 다른 질문을 받는다.
+    #
+    # 지원서 세션과 달리 이건 파생 데이터다. 지워져도 다시 만들면 되므로 `_save`
+    # 의 30일 TTL 을 그대로 쓴다.
+
+    def save_notice_fields(self, cache_key: str, payload: dict[str, Any]) -> None:
+        self._save(str(cache_key), "notice_fields", payload)
+
+    def get_notice_fields(self, cache_key: str) -> dict[str, Any] | None:
+        return self._get(str(cache_key))

@@ -28,7 +28,12 @@ from .config import (
 )
 from .criteria_repository import DynamoDBCriteriaRepository, LocalTrialCatalog
 from .domain.intake_vocabulary import CatalogFieldResolver
-from .intake import DynamoDBIntakeStore, IntakeService, IntakeStore
+from .intake import (
+    DynamoDBIntakeStore,
+    IntakeService,
+    IntakeStore,
+    NoticeFieldAugmentor,
+)
 from .intake.model import StubApplicationModelClient
 from .orchestration.gateway import ToolGateway, default_policy
 from .orchestration.recommendation import RecommendationOrchestrator
@@ -72,7 +77,10 @@ class Container:
     cohort_selector: CohortSelector
     intake: IntakeAgent
     application_intake: IntakeService
+    # 인메모리와 DynamoDB 구현이 같은 계약을 만족한다. 어느 쪽이 꽂히는지는
+    # 설정에 따라 달라지므로 구체 타입으로 좁히지 않는다.
     intake_store: object
+    notice_fields: NoticeFieldAugmentor
     agent: AgentStatus
     retrieval_mode: str
 
@@ -228,9 +236,15 @@ def build_container(
     )
     # 지원서 모듈은 로컬에서도 계약을 검증할 수 있도록 결정론적 스텁을 사용한다.
     # 운영에서 Bedrock이 활성화되면 스크리닝과 같은 모델 클라이언트를 공유한다.
+    intake_model = shared_model or StubApplicationModelClient()
     application_intake = IntakeService(
         store=intake_store,
-        model=shared_model or StubApplicationModelClient(),
+        model=intake_model,
+    )
+    # 공고문 파생 필드(3층). 스텁이면 스스로 건너뛰고 기준 파생 항목만 남긴다.
+    notice_fields = NoticeFieldAugmentor(
+        model=intake_model,
+        store=intake_store,
     )
 
     return Container(
@@ -249,6 +263,7 @@ def build_container(
         intake=agents.intake,
         application_intake=application_intake,
         intake_store=intake_store,
+        notice_fields=notice_fields,
         agent=agents.status,
         retrieval_mode=retrieval_tool.retrieval_mode,
     )

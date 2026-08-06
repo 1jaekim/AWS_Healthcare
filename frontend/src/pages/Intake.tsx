@@ -53,9 +53,18 @@ interface SchemaProperty {
   title?: string
   description?: string
   type?: string
+  /** `base` · `trial_notice`(기준 파생) · `notice_llm`(공고문 파생) */
   'x-source'?: string
   'x-unit'?: string
   'x-criterion-field'?: string
+}
+
+/** 기본 6항목이 아닌, 이 공고 때문에 추가된 항목의 출처. */
+const TRIAL_SOURCES = ['trial_notice', 'notice_llm']
+
+const SOURCE_NOTE: Record<string, string> = {
+  trial_notice: '공고 기준',
+  notice_llm: '공고문',
 }
 
 /** 지원서에 채워진 값을 사람이 읽는 한 줄로. */
@@ -143,14 +152,23 @@ export default function Intake() {
     return shape?.properties ?? {}
   }, [schema])
 
-  /** 이 공고의 기준에서 파생된 항목. 기본 6항목과 구분해서 보여준다. */
+  /**
+   * 이 공고 때문에 추가된 항목. 기본 6항목과 구분해서 보여준다.
+   *
+   * 기준 JSON 에서 파생된 것(`trial_notice`)과 공고문에서 LLM 이 뽑은 것
+   * (`notice_llm`)을 함께 보여주되, 출처는 구분해 표시한다. 앞쪽은 판정에 바로
+   * 쓰이고 뒤쪽은 기준에 연결된 경우에만 쓰인다.
+   */
   const criteriaFields = useMemo(
     () =>
-      Object.entries(properties).filter(
-        ([, spec]) => spec['x-source'] === 'trial_notice',
+      Object.entries(properties).filter(([, spec]) =>
+        TRIAL_SOURCES.includes(spec['x-source'] ?? ''),
       ),
     [properties],
   )
+
+  /** 공고문에서 LLM 이 추가한 항목의 근거 문구. */
+  const noticeEvidence = schema?.augmentation?.evidence ?? {}
 
   const titleOf = (name: string) => properties[name]?.title ?? name
 
@@ -218,6 +236,13 @@ export default function Intake() {
     }
   }
 
+  /**
+   * 완성된 지원서를 판정 화면으로 넘긴다.
+   *
+   * `application` 을 쿼리로 실어 보내면 판정이 데모 환자가 아니라 지원서 프로필을
+   * 기준으로 돌아간다. 여기서 직접 판정을 실행하지 않는 이유는 진행 표시를
+   * `/matching` 이 담당하기 때문이다.
+   */
   async function handleScreen() {
     if (!intake || intake.status !== 'COMPLETE') return
     setBusy(true)
@@ -321,15 +346,21 @@ export default function Intake() {
               <div className="kicker">이 공고가 추가로 확인하는 항목</div>
               <div className="inline-wrap">
                 {criteriaFields.map(([name, spec]) => (
-                  <span key={name} className="tag">
+                  <span
+                    key={name}
+                    className={
+                      spec['x-source'] === 'notice_llm' ? 'tag' : 'tag tag-accent'
+                    }
+                    title={noticeEvidence[name] ?? spec.description}
+                  >
                     {spec.title ?? name}
                     {spec['x-unit'] ? ` (${spec['x-unit']})` : ''}
                   </span>
                 ))}
               </div>
               <div className="muted" style={{ fontSize: 12 }}>
-                공고의 선정·제외 기준에서 만들어진 항목입니다. 모르시면 비워두셔도
-                되고, 이어지는 질문에서 다시 확인합니다.
+                공고의 선정·제외 기준과 공고문에서 만들어진 항목입니다. 모르시면
+                비워두셔도 되고, 이어지는 질문에서 다시 확인합니다.
               </div>
             </div>
           ) : null}
@@ -464,8 +495,8 @@ export default function Intake() {
                   </div>
                   <div className="muted" style={{ fontSize: 12, marginTop: 2 }}>
                     {titleOf(name)}
-                    {properties[name]?.['x-source'] === 'trial_notice'
-                      ? ' · 공고 기준'
+                    {SOURCE_NOTE[properties[name]?.['x-source'] ?? '']
+                      ? ` · ${SOURCE_NOTE[properties[name]?.['x-source'] ?? '']}`
                       : ''}
                   </div>
                 </div>

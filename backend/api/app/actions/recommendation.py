@@ -136,12 +136,9 @@ class TrialRanker:
             "NOT_OK": "EXCLUDED",
             "UNKNOWN": "NEEDS_MORE_INFO",
         }[recommendation_decision]
-        unresolved_a2a = [
-            item
-            for item in deliberation.get("items", [])
-            if isinstance(item, dict) and item.get("recommendation") == "UNKNOWN"
-        ]
-        human_review_required = bool(output.review_ticket_id or unresolved_a2a)
+        # 사람 확인 필요 신호는 오케스트레이터가 판정에 담아준다. 예전에는 검토 큐
+        # 티켓 존재 여부로 판단했는데, 그 큐는 휘발성이라 신호가 사라졌다.
+        human_review_required = bool(output.human_review_criteria)
 
         return {
             "rank": None,
@@ -161,7 +158,9 @@ class TrialRanker:
             "criteria_total": output.outcome.criteria_total,
             "unresolved_criteria": unresolved,
             "human_review_required": human_review_required or not criteria_sufficient,
-            "review_ticket_id": output.review_ticket_id,
+            # 검토 큐 제거로 `review_ticket_id` 가 없어졌다. 사람 확인이 필요한
+            # 기준 목록이 그 자리를 대신한다.
+            "human_review_criteria": list(output.human_review_criteria),
             "selection_reason": (
                 "승인된 기준이 3개 미만이라 적합도를 계산하지 않았습니다."
                 if not criteria_sufficient

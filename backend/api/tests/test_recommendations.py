@@ -63,7 +63,7 @@ def _output(
         run=run,
         outcome=outcome,
         requests=[],
-        review_ticket_id=None,
+        human_review_criteria=(),
     )
 
 

@@ -27,7 +27,7 @@ from .intake import (
     IntakeExtractionError,
 )
 from .intake.screening import ApplicationSupplementBuilder
-from .intake.service import InvalidGeneratedSchema
+from .intake.service import RESERVED_FIELDS, InvalidGeneratedSchema
 from .intake.trial_schema import TrialSchemaBuilder
 from .orchestration.runtime import PatientNotFound, TrialNotFound
 from .reasoning.supplements import SupplementBuilder
@@ -56,8 +56,7 @@ from .schemas import (
     PrincipalOut,
     RecommendationRunRequest,
     RecommendationRunResponse,
-    ReviewDecisionRequest,
-    ReviewTicketOut,
+
     ScreeningRequest,
     ScreeningResult,
     ScreeningRunRequest,
@@ -309,18 +308,29 @@ def create_application_schema(
     response_model=ApplicationSchemaResponse,
     tags=["applications", "trials"],
 )
-def prepare_trial_application_schema(trial_id: str, container: Ctx) -> dict:
-    """공고의 선정·제외 기준으로 지원서 스키마를 준비한다.
+def prepare_trial_application_schema(
+    trial_id: str,
+    container: Ctx,
+    augment: bool = True,
+) -> dict:
+    """공고 하나의 지원서 스키마를 준비한다. 화면이 공고를 클릭하면 이 호출 하나로 끝난다.
 
-    화면에서 추천 공고를 클릭하면 이 호출 하나로 챗을 시작할 수 있다. 공고문을
-    클라이언트가 조립해 보내지 않아도 되고, 물어볼 항목이 기준에서 파생되므로
-    수집한 값이 반드시 어떤 기준의 입력이 된다.
+    스키마는 세 층으로 쌓인다.
 
-    같은 공고·같은 기준이면 같은 `schema_id` 가 나온다(내용 지문 기반). 여러 번
-    불러도 스키마가 늘어나지 않으므로 화면이 캐시를 관리할 필요가 없다.
+        1. 기본 6항목        고정. 공고와 무관하게 항상 같다
+        2. 기준 파생 항목    `TrialSchemaBuilder`. 결정론적. 판정의 입력이 된다
+        3. 공고문 파생 항목  `NoticeFieldAugmentor`. LLM 이 공고문을 읽고 추가한다
 
-    공고문 자유 텍스트에서 LLM 으로 필드를 만들고 싶으면
-    `POST /api/v1/application-schemas` 를 쓴다. 이 경로는 모델을 부르지 않는다.
+    2층이 먼저 자리를 잡고 3층이 그 위에 얹힌다. 순서가 중요하다. 3층은 2층이
+    이미 묻는 기준을 다시 묻지 못하고, 기준에 연결되는 항목이면 단위를 기준
+    선언값으로 강제한다. 판정 입력을 모델 생성 필드로 교체하지 않기 위한 것이다.
+
+    3층이 실패하거나 모델이 스텁이면 2층까지만으로 스키마가 나온다. 공고문 보강이
+    안 되는 것과 지원을 못 하는 것은 다른 문제다. `augment=false` 로 끄면 2층까지만
+    쓴다.
+
+    같은 공고·같은 기준·같은 3층 결과면 같은 `schema_id` 가 나온다(내용 지문 기반).
+    3층 결과는 공고별로 캐시되므로 여러 번 불러도 스키마가 늘어나지 않는다.
     """
     catalog = _trial_catalog(container)
     trial = catalog.get_trial(trial_id)
@@ -329,20 +339,63 @@ def prepare_trial_application_schema(trial_id: str, container: Ctx) -> dict:
             status_code=status.HTTP_404_NOT_FOUND, detail="Trial not found"
         )
 
+    # 기준은 공고 카탈로그에서 읽는다. 운영에서는 승인된 공고의 CriteriaStore,
+    # 로컬에서는 CSV 를 감싼 LocalTrialCatalog 다. 3층의 단위 강제도 같은 목록을
+    # 봐야 하므로 한 번만 읽어 재사용한다.
+    criteria = catalog.trial_criteria(trial_id)
     request = TrialSchemaBuilder().build(
         trial=trial,
-        criteria=catalog.trial_criteria(trial_id),
+        criteria=criteria,
     )
-    try:
-        return container.application_intake.generate_schema(
+
+    additional_fields = list(request.additional_fields)
+    augmentation: dict | None = None
+    if augment:
+        derived_names = {str(item["name"]) for item in additional_fields}
+        notice_extra = container.notice_fields.augment(
             trial_id=trial_id,
             notice_text=request.notice_text,
-            additional_fields=request.additional_fields,
+            reserved_names=RESERVED_FIELDS | derived_names,
+            covered_criterion_fields={
+                str(item["criterion_field"])
+                for item in additional_fields
+                if item.get("criterion_field")
+            },
+            criterion_units={
+                str(item.get("field") or ""): (
+                    str(item.get("unit")).strip() if item.get("unit") else None
+                )
+                for item in criteria
+                if item.get("field")
+            },
+        )
+        additional_fields.extend(notice_extra.fields)
+        augmentation = notice_extra.to_dict()
+
+    try:
+        record = container.application_intake.generate_schema(
+            trial_id=trial_id,
+            notice_text=request.notice_text,
+            additional_fields=additional_fields,
         )
     except InvalidGeneratedSchema as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
+
+    if augmentation is not None:
+        # 어떤 항목을 무슨 근거로 추가했고 무엇을 왜 버렸는지 남긴다. 화면과
+        # 감사 로그가 같은 값을 본다.
+        container.audit.record(
+            "APPLICATION_SCHEMA_AUGMENTED",
+            actor="system",
+            trial_id=trial_id,
+            schema_id=record["schema_id"],
+            status=augmentation["status"],
+            added_fields=augmentation["fields"],
+            dropped=augmentation["dropped"],
+        )
+    return {**record, "augmentation": augmentation}
 
 
 @app.get(
@@ -542,7 +595,7 @@ def _run_response(container: Container, output) -> dict:
         "blocking_criteria": list(outcome.blocking_criteria),
         "open_criteria": list(outcome.open_criteria),
         "review_criteria": list(outcome.review_criteria),
-        "review_ticket_id": output.review_ticket_id,
+        "human_review_criteria": list(output.human_review_criteria),
         "mode": output.run.metadata.get("mode", "deterministic"),
         "agent": output.run.metadata.get("agent", {}),
         "deliberation": output.run.metadata.get("deliberation", {}),
@@ -623,13 +676,10 @@ def get_screening(run_id: str, container: Ctx, principal: CurrentUser) -> dict:
         "blocking_criteria": packet.get("uncertainty", {}).get("blocking_criteria", []),
         "open_criteria": packet.get("uncertainty", {}).get("open_criteria", []),
         "review_criteria": packet.get("uncertainty", {}).get("review_criteria", []),
-        "review_ticket_id": next(
-            (
-                ticket.ticket_id
-                for ticket in container.run_store.list_tickets()
-                if ticket.run_id == run_id
-            ),
-            None,
+        # 재조회 경로에서는 저장된 판정에서 되살린다. 검토 대상은 규칙이 표시한
+        # review_criteria 와 같으므로 별도 보관이 필요 없다.
+        "human_review_criteria": packet.get("uncertainty", {}).get(
+            "review_criteria", []
         ),
         "mode": run.metadata.get("mode", "deterministic"),
         "agent": run.metadata.get("agent", {}),
@@ -1045,51 +1095,10 @@ def decide_trial_review(
     return item
 
 
-@app.get(
-    "/api/v1/review-queue",
-    response_model=list[ReviewTicketOut],
-    tags=["review"],
-)
-def list_review_queue(
-    container: Ctx,
-    _: AdminUser,
-    ticket_status: Annotated[str | None, Query(alias="status")] = None,
-    trial_id: Annotated[str | None, Query()] = None,
-) -> list[dict]:
-    tickets = container.run_store.list_tickets(
-        status=ticket_status, trial_id=trial_id
-    )
-    return [ticket.to_dict() for ticket in tickets]
-
-
-@app.patch(
-    "/api/v1/review-queue/{ticket_id}",
-    response_model=ReviewTicketOut,
-    tags=["review"],
-)
-def decide_review(
-    ticket_id: str, payload: ReviewDecisionRequest, container: Ctx, _: AdminUser
-) -> dict:
-    """검토 항목을 승인·반려·재실행 요청으로 처리한다."""
-    ticket = container.run_store.decide_ticket(
-        ticket_id,
-        decision=payload.decision,
-        decided_by=payload.decided_by,
-        note=payload.note,
-    )
-    if ticket is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ticket not found")
-    container.audit.record(
-        "REVIEW_DECIDED",
-        actor=payload.decided_by,
-        run_id=ticket.run_id,
-        person_id=ticket.person_id,
-        trial_id=ticket.trial_id,
-        ticket_id=ticket.ticket_id,
-        status=ticket.status,
-        note=payload.note,
-    )
-    return ticket.to_dict()
+# 검토 큐 라우트(`GET/PATCH /api/v1/review-queue`)는 제거했다. 티켓이 Lambda
+# 메모리에 있어 콜드 스타트마다 사라지고, 읽는 화면도 없었다. 사람 확인이 필요한
+# 기준은 판정 응답의 `human_review_criteria` 에 담긴다. 검토 화면이 필요해지면
+# 판정을 조회해 만들고, 그때 영속 저장을 함께 설계한다.
 
 
 # ---------------------------------------------------------------------------

@@ -181,7 +181,7 @@ def test_architecture_endpoint_lists_tool_permissions() -> None:
         assert by_name["criteria_tool"] == ["READ:dynamodb:trial_definitions"]
 
 
-def test_review_queue_and_answer_flow() -> None:
+def test_human_review_signal_and_answer_flow() -> None:
     with TestClient(app) as client:
         trial_id = client.get("/api/v1/trials").json()[0]["trial_id"]
         person_id = client.get("/api/v1/patients?limit=1").json()["items"][0][
@@ -204,15 +204,17 @@ def test_review_queue_and_answer_flow() -> None:
         assert answer.status_code == 200
         assert answer.json()["person_id"] == person_id
 
-        queue = client.get("/api/v1/review-queue").json()
-        if queue:
-            ticket_id = queue[0]["ticket_id"]
-            decided = client.patch(
-                f"/api/v1/review-queue/{ticket_id}",
-                json={"decision": "APPROVED", "decided_by": "researcher-01"},
-            )
-            assert decided.status_code == 200
-            assert decided.json()["status"] == "APPROVED"
+        # 사람 확인이 필요한 기준은 판정 응답에 담긴다. 별도 큐를 두지 않는다.
+        # 휘발성 저장소에 티켓을 쌓고 아무도 읽지 않는 구조를 없앤 결과다.
+        assert "human_review_criteria" in run
+        assert isinstance(run["human_review_criteria"], list)
+        # 검토 대상은 미해소·검토필요 기준의 부분집합이어야 한다.
+        assert set(run["human_review_criteria"]) <= {
+            item["criterion_id"] for item in run["packet"]["items"]
+        }
+
+        # 큐 라우트는 제거되었다.
+        assert client.get("/api/v1/review-queue").status_code == 404
 
 
 def test_guardrail_blocks_certainty_expression() -> None:

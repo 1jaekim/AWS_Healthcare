@@ -1,0 +1,339 @@
+<mxfile host="app.diagrams.net" agent="Kiro" version="24.7.17">
+  <diagram id="pipeline" name="1. 전체 파이프라인">
+    <mxGraphModel dx="1500" dy="950" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1150" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="h" value="전체 파이프라인 — 공고 수집부터 판정까지" style="text;html=1;align=left;verticalAlign=middle;fontSize=20;fontStyle=1;spacingLeft=4;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="700" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="hb" value="사용자에게 노출하는 결과는 가능 · 불가능 · 판정불가 세 값뿐이다. 점수와 순위는 화면에서 제거했다." style="text;html=1;align=left;verticalAlign=middle;fontSize=12;fontColor=#666666;spacingLeft=4;" vertex="1" parent="1">
+          <mxGeometry x="40" y="55" width="900" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- A. 공고 수집 -->
+        <mxCell id="laneA" value="A. 공고 수집과 승인 — 사람이 승인한 공고만 판정 대상이 된다" style="swimlane;html=1;startSize=32;fillColor=#f5f5f5;strokeColor=#999999;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="100" width="1620" height="200" as="geometry" />
+        </mxCell>
+        <mxCell id="a1" value="Playwright 크롤러&#10;crawler/playwright_capture.py&#10;&#10;medi25 · konect · koreaclinicaltrials&#10;공개 페이지만. 로그인·CAPTCHA 우회 안 함" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;" vertex="1" parent="laneA">
+          <mxGeometry x="25" y="45" width="230" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="a2" value="Protocol Parser Lambda&#10;&#10;Bedrock 으로 공고문에서&#10;선정·제외 기준 추출" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;" vertex="1" parent="laneA">
+          <mxGeometry x="300" y="45" width="200" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="a3" value="DynamoDB CriteriaStore&#10;status: pending_review" style="shape=cylinder3;boundedLbl=1;backgroundOutline=1;html=1;whiteSpace=wrap;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;size=10;" vertex="1" parent="laneA">
+          <mxGeometry x="545" y="50" width="190" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="a4" value="관리자 검토&#10;GET  /api/v1/admin/trials&#10;PATCH /api/v1/admin/trials/{id}/review&#10;&#10;Cognito admin 그룹만&#10;approved / rejected 결정" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;strokeWidth=2;" vertex="1" parent="laneA">
+          <mxGeometry x="780" y="45" width="250" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="a5" value="TrialCatalog&#10;&#10;DynamoDBCriteriaRepository (운영)&#10;LocalTrialCatalog (CSV, 로컬)&#10;&#10;has_trial · get_trial · list_trials&#10;trial_criteria · trial_catalog&#10;&#10;approved 만 노출한다" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;strokeWidth=2;" vertex="1" parent="laneA">
+          <mxGeometry x="1080" y="45" width="230" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="a6" value="같은 계약 뒤에 두 구현을 둔다.&#10;로컬은 CSV, 운영은 DynamoDB.&#10;라우트는 어느 쪽인지 모른다." style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8f8f8;strokeColor=#b3b3b3;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;dashed=1;" vertex="1" parent="laneA">
+          <mxGeometry x="1355" y="45" width="240" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ae1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#6c8ebf;" edge="1" parent="laneA" source="a1" target="a2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ae2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#9673a6;" edge="1" parent="laneA" source="a2" target="a3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ae3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#d79b00;" edge="1" parent="laneA" source="a3" target="a4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ae4" value="approved" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#82b366;fontSize=10;" edge="1" parent="laneA" source="a4" target="a5"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- B. 스키마 3층 -->
+        <mxCell id="laneB" value="B. 지원서 스키마 3층 — POST /api/v1/trials/{trial_id}/application-schema" style="swimlane;html=1;startSize=32;fillColor=#f5f5f5;strokeColor=#999999;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="330" width="1620" height="270" as="geometry" />
+        </mxCell>
+        <mxCell id="b1" value="1층 · 기본 6항목&#10;BASE_PROPERTIES&#10;&#10;age · sex · diagnosed_conditions&#10;current_medications · allergies&#10;prior_trial_participation&#10;&#10;고정. 공고와 무관&#10;x-source: base" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;" vertex="1" parent="laneB">
+          <mxGeometry x="25" y="45" width="220" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="b2" value="2층 · 기준 파생 항목&#10;TrialSchemaBuilder — 결정론적&#10;&#10;기준(field, operator, value, unit)&#10;→ FIELD_CATALOG 라벨·단위·종류&#10;→ 확장 필드&#10;&#10;LLM 호출 없음. 판정의 입력이 된다&#10;x-source: trial_notice&#10;x-criterion-field 보장" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;strokeWidth=2;" vertex="1" parent="laneB">
+          <mxGeometry x="270" y="45" width="240" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="b2n" value="ASKABLE_KINDS 만 묻는다 — NUMERIC_POINT · CATEGORICAL · DERIVED_BOOLEAN&#10;TEMPORAL_WINDOW 제외(기록에서 계산) · NARRATIVE 제외(자유서술 검색)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8f8f8;strokeColor=#b3b3b3;fontSize=10;align=left;spacingLeft=8;verticalAlign=middle;dashed=1;" vertex="1" parent="laneB">
+          <mxGeometry x="270" y="200" width="500" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="b3" value="3층 · 공고문 파생 항목&#10;NoticeFieldAugmentor — LLM&#10;&#10;공고문 자유 텍스트를 Bedrock 이 읽고&#10;기준에 없는 확인 항목을 추가&#10;예) 방문 가능 요일 · 흡연력 · 동의 가능&#10;&#10;x-source: notice_llm&#10;최대 8개 · temperature 0" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;strokeWidth=2;" vertex="1" parent="laneB">
+          <mxGeometry x="535" y="45" width="235" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="b4" value="3층 가드 6종 — 통과하지 못한 필드는 이유와 함께 augmentation.dropped 에 남는다" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;fontStyle=1;align=left;spacingLeft=10;verticalAlign=top;spacingTop=6;" vertex="1" parent="laneB">
+          <mxGeometry x="800" y="45" width="560" height="205" as="geometry" />
+        </mxCell>
+        <mxCell id="g1" value="1. 이름 중복 차단&#10;기본·기준 파생과 같은 이름은 버린다" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=10;align=left;spacingLeft=6;verticalAlign=top;spacingTop=4;" vertex="1" parent="laneB">
+          <mxGeometry x="812" y="75" width="270" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="g2" value="2. 기준 중복 차단&#10;2층이 이미 묻는 criterion_field 면 버린다" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=10;align=left;spacingLeft=6;verticalAlign=top;spacingTop=4;" vertex="1" parent="laneB">
+          <mxGeometry x="1090" y="75" width="258" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="g3" value="3. 답할 수 없는 종류 차단&#10;TEMPORAL_WINDOW · NARRATIVE 매핑" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=10;align=left;spacingLeft=6;verticalAlign=top;spacingTop=4;" vertex="1" parent="laneB">
+          <mxGeometry x="812" y="128" width="270" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="g4" value="4. 없는 매핑 제거 + 5. 단위 강제&#10;기준 선언 단위로 덮어 V-UNIT 통과" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=10;align=left;spacingLeft=6;verticalAlign=top;spacingTop=4;" vertex="1" parent="laneB">
+          <mxGeometry x="1090" y="128" width="258" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="g6" value="6. 출처 위장 차단 — x-source 화이트리스트. 모델이 trial_notice 로 위장해도 notice_llm 고정&#10;실패 격리 — 모델이 죽거나 스텁이면 빈 목록(status: skipped/failed). 1·2층만으로 챗은 시작된다" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;spacingLeft=6;verticalAlign=middle;" vertex="1" parent="laneB">
+          <mxGeometry x="812" y="180" width="536" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="b5" value="IntakeStore 캐시&#10;key: trial_id + notice + 기준 단위&#10;재호출 status=cached&#10;→ 모델 0회 · schema_id 안정" style="shape=cylinder3;boundedLbl=1;backgroundOutline=1;html=1;whiteSpace=wrap;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;size=10;verticalAlign=top;spacingTop=4;" vertex="1" parent="laneB">
+          <mxGeometry x="1390" y="60" width="205" height="110" as="geometry" />
+        </mxCell>
+
+        <mxCell id="be1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#82b366;" edge="1" parent="laneB" source="b1" target="b2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="be2" value="reserved 전달" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#d79b00;fontSize=10;dashed=1;" edge="1" parent="laneB" source="b2" target="b3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="be3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#9673a6;" edge="1" parent="laneB" source="b3" target="b4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="be4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;dashed=1;" edge="1" parent="laneB" source="b4" target="b5"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="be5" value="approved 공고의 기준" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#82b366;fontSize=10;" edge="1" parent="1" source="a5" target="b2"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1235" y="310" /><mxPoint x="430" y="310" /></Array></mxGeometry></mxCell>
+
+        <!-- C. 수집 -->
+        <mxCell id="laneC" value="C. 지원서 수집 — 값만 모은다. 적격 판단은 하지 않는다" style="swimlane;html=1;startSize=32;fillColor=#f5f5f5;strokeColor=#999999;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="630" width="1620" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="c1" value="서술 1문항&#10;최대 2000자" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" vertex="1" parent="laneC">
+          <mxGeometry x="25" y="55" width="130" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="c2" value="POST /applications&#10;LLM 추출 — 서술에서 스키마 필드 값&#10;(intake_extract)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;strokeWidth=2;" vertex="1" parent="laneC">
+          <mxGeometry x="190" y="50" width="215" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="c3" value="누락 필드 계산&#10;required 대조&#10;(규칙)" style="rhombus;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="laneC">
+          <mxGeometry x="445" y="45" width="150" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="c4" value="POST /applications/{id}/responses&#10;재질문 최대 5회&#10;&#10;질문 문구는 템플릿(LLM 아님)&#10;값 추출만 LLM" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;" vertex="1" parent="laneC">
+          <mxGeometry x="640" y="45" width="235" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="c5" value="COMPLETE" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;fontStyle=1;" vertex="1" parent="laneC">
+          <mxGeometry x="920" y="50" width="120" height="38" as="geometry" />
+        </mxCell>
+        <mxCell id="c6" value="MAX_FOLLOW_UPS_REACHED&#10;연구간호사 확인" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="laneC">
+          <mxGeometry x="920" y="98" width="120" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="c7" value="DynamoDB ApplicationStore&#10;스키마 · 지원서 세션 · 3층 캐시&#10;TTL 30일 · ConsistentRead&#10;&#10;콜드 스타트에도 세션이 살아남는다&#10;(인메모리 IntakeStore 는 로컬용)" style="shape=cylinder3;boundedLbl=1;backgroundOutline=1;html=1;whiteSpace=wrap;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;size=10;verticalAlign=top;spacingTop=4;align=left;spacingLeft=8;" vertex="1" parent="laneC">
+          <mxGeometry x="1085" y="45" width="260" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="c8" value="빈 배열(알레르기 없음)과 false&#10;(참여 이력 없음)는 유효한 답.&#10;누락으로 잡지 않는다" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;" vertex="1" parent="laneC">
+          <mxGeometry x="1375" y="45" width="220" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ce1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#6c8ebf;" edge="1" parent="laneC" source="c1" target="c2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ce2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#6c8ebf;" edge="1" parent="laneC" source="c2" target="c3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ce3" value="누락 있음" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#d79b00;fontSize=10;" edge="1" parent="laneC" source="c3" target="c4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ce4" value="병합 후 재검사" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;dashed=1;fontSize=10;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="laneC" source="c4" target="c3"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="757" y="160" /><mxPoint x="520" y="160" /></Array></mxGeometry></mxCell>
+        <mxCell id="ce5" value="누락 없음" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#82b366;fontSize=10;" edge="1" parent="laneC" source="c4" target="c5"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ce6" value="5회 초과" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#b85450;fontSize=10;" edge="1" parent="laneC" source="c4" target="c6"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="ce7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;dashed=1;" edge="1" parent="laneC" source="c5" target="c7"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- D. 판정 -->
+        <mxCell id="laneD" value="D. 판정 — POST /api/v1/applications/{id}/screening → ScreeningOrchestrator" style="swimlane;html=1;startSize=32;fillColor=#f5f5f5;strokeColor=#999999;fontSize=13;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="40" y="840" width="1620" height="250" as="geometry" />
+        </mxCell>
+        <mxCell id="d0" value="ensure_person_access&#10;토큰 custom:person_id 일치" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="laneD">
+          <mxGeometry x="25" y="45" width="165" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="d1" value="ApplicationSupplementBuilder&#10;지원서 값 → Observation&#10;PATIENT_REPORTED" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;" vertex="1" parent="laneD">
+          <mxGeometry x="25" y="105" width="165" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="d2" value="TimelineGraphTool&#10;CSV 기반 DatasetRepository&#10;(Neptune 어댑터 교체 지점)&#10;&#10;인덱스 방문 기준 배치 조회" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;" vertex="1" parent="laneD">
+          <mxGeometry x="225" y="45" width="215" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="d3" value="_apply_supplements&#10;&#10;그래프에 값이 없는 필드만 채운다&#10;기록으로 확인된 값은 덮지 않는다&#10;기준에 없는 필드는 ignored&#10;&#10;→ 3층 필드 중 기준 매핑이 없는 것은&#10;   수집·검토용으로만 남는다" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;strokeWidth=2;" vertex="1" parent="laneD">
+          <mxGeometry x="225" y="140" width="215" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="d4" value="EvidenceGatheringAgent&#10;GraphRAG — Bedrock KB + Neptune&#10;자유서술 근거 보강&#10;실패 시 결정론적 fallback" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;" vertex="1" parent="laneD">
+          <mxGeometry x="475" y="45" width="225" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="d5" value="기준별 판정 — 배치" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#666666;fontSize=11;fontStyle=1;verticalAlign=top;spacingTop=6;dashed=1;" vertex="1" parent="laneD">
+          <mxGeometry x="735" y="45" width="400" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="d5a" value="rule_evaluator — 규칙 계산" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="laneD">
+          <mxGeometry x="748" y="72" width="375" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="d5b" value="LLM judge — evaluate_trial_criteria_batch&#10;기준을 한 번에 묶어 판단 (17커밋에서 배치화)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;" vertex="1" parent="laneD">
+          <mxGeometry x="748" y="105" width="375" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="d5c" value="JudgmentVerifier — 7항목&#10;V-EVIDENCE · V-WINDOW · V-UNIT · V-OPERATOR · V-TYPE · V-PII · V-CONFIDENCE" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;" vertex="1" parent="laneD">
+          <mxGeometry x="748" y="150" width="375" height="42" as="geometry" />
+        </mxCell>
+        <mxCell id="d5d" value="RuleAggregator.confirm — 상태 확정&#10;모델이 규칙보다 강한 결론을 내도 판정은 올라가지 않는다" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;strokeWidth=2;" vertex="1" parent="laneD">
+          <mxGeometry x="748" y="197" width="375" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="d6" value="A2A 교차 검토&#10;미해소 기준만 · 최대 2라운드&#10;&#10;점수에만 반영되고&#10;규칙 판정을 덮지 않는다&#10;→ 화면에는 노출하지 않는다" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;" vertex="1" parent="laneD">
+          <mxGeometry x="1170" y="45" width="200" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="d7" value="종합 판정&#10;&#10;가능      ELIGIBLE / OK&#10;불가능    INELIGIBLE / NOT_OK&#10;판정불가  NEEDS_MORE_EVIDENCE&#10;          REVIEW_REQUIRED / UNKNOWN" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;strokeWidth=2;" vertex="1" parent="laneD">
+          <mxGeometry x="1170" y="155" width="200" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="d8" value="packet · requests · explanations&#10;→ Bedrock Guardrail (PII 차단)&#10;→ 검토 큐&#10;→ AuditTrail&#10;&#10;모든 판정에 근거 출처 ID 동반" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;" vertex="1" parent="laneD">
+          <mxGeometry x="1405" y="45" width="190" height="120" as="geometry" />
+        </mxCell>
+
+        <mxCell id="de1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#6c8ebf;" edge="1" parent="laneD" source="d0" target="d1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#d79b00;" edge="1" parent="laneD" source="d1" target="d3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#82b366;" edge="1" parent="laneD" source="d2" target="d3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#9673a6;" edge="1" parent="laneD" source="d3" target="d4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#6c8ebf;" edge="1" parent="laneD" source="d4" target="d5a"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#9673a6;" edge="1" parent="laneD" source="d5d" target="d6"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#82b366;" edge="1" parent="laneD" source="d6" target="d7"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="de8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#666666;" edge="1" parent="laneD" source="d7" target="d8"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <mxCell id="lg" value="범례 — 초록: 규칙·결정론적   보라: LLM (Bedrock)   주황: 검증·가드·저장소   빨강: 인증·사람 개입   파랑: 데이터 흐름" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#999999;fontSize=11;align=left;spacingLeft=10;" vertex="1" parent="1">
+          <mxGeometry x="40" y="1105" width="1000" height="32" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="screens" name="2. 화면 흐름과 3상태">
+    <mxGraphModel dx="1500" dy="950" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="sh" value="화면 흐름 — 추천은 홈에서 한 번, 결과는 세 값" style="text;html=1;align=left;verticalAlign=middle;fontSize=20;fontStyle=1;spacingLeft=4;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="700" height="40" as="geometry" />
+        </mxCell>
+
+        <mxCell id="s1" value="회원가입&#10;/signup → /signup/verify&#10;Cognito 이메일 코드 확인" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="110" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="s2" value="설문 4문항&#10;/signup/survey&#10;&#10;purpose · areas(관심분야)&#10;medication · allergy" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="60" y="215" width="200" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="s3" value="홈 /home&#10;첫 진입에서 추천 1회&#10;POST /recommendations/run&#10;&#10;승인 공고 전체를 기준과 대조&#10;병렬 실행 (ThreadPool, 최대 5)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="350" y="110" width="250" height="120" as="geometry" />
+        </mxCell>
+
+        <mxCell id="todo" value="미구현 — 추천 후보를 설문 areas 로 좁히는 부분&#10;&#10;설문 areas 는 CLINICAL_AREAS 고정 9개&#10;('당뇨 · 내분비', '심혈관', ...)&#10;공고 purpose 는 파서가 뽑은 condition 자유 텍스트&#10;('제2형 당뇨병')&#10;&#10;→ 두 어휘가 달라 동등 비교로 매칭되지 않는다.&#10;   매핑 방식 미결정 (키워드표 / 승인 시 LLM 분류 / 정렬 가중치)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="350" y="250" width="380" height="150" as="geometry" />
+        </mxCell>
+
+        <mxCell id="s4" value="공고 클릭" style="rhombus;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="700" y="120" width="140" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="s5" value="지원서 챗 /intake/:trialId&#10;&#10;1단계 서술 → 2단계 재질문(최대 5회)&#10;스키마 3층이 물을 항목을 정한다" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="900" y="100" width="270" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="s6" value="판정 실행 /matching&#10;→ 결과 /results/:trialId" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1230" y="105" width="220" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="dbl" value="알려진 중복 — /matching 과 /results 가 각각&#10;recommendations/run 을 다시 실행한다.&#10;지원서를 낸 공고 하나만 보면 되는데&#10;전체 후보를 재판정한다. 미정리." style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="215" width="280" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- 3상태 -->
+        <mxCell id="v" value="결과 — 이 세 값만 노출한다" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#999999;fontSize=14;fontStyle=1;align=left;spacingLeft=12;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="60" y="450" width="1420" height="230" as="geometry" />
+        </mxCell>
+        <mxCell id="v1" value="가능&#10;&#10;screening_decision = OK&#10;eligibility = ELIGIBLE&#10;&#10;기록으로 모든 기준이&#10;확인되었습니다" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="80" y="490" width="230" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="v2" value="불가능&#10;&#10;screening_decision = NOT_OK&#10;eligibility = INELIGIBLE&#10;&#10;충족하지 못한 기준이&#10;있습니다" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="330" y="490" width="230" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="v3" value="판정불가&#10;&#10;screening_decision = UNKNOWN&#10;eligibility = NEEDS_MORE_EVIDENCE&#10;또는 REVIEW_REQUIRED&#10;&#10;기록만으로 확인되지 않은&#10;기준이 있습니다" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="580" y="490" width="245" height="130" as="geometry" />
+        </mxCell>
+
+        <mxCell id="rm" value="화면에서 제거한 것 — 추천 분석&#10;&#10;적합도 점수 (rank_score × 100)&#10;충족 N · 확인필요 N · 미충족 N&#10;selection_reason (&quot;A2A 근거 합의가...&quot;)&#10;recommendation_decision 비교 문구&#10;순위 (rank)&#10;&#10;점수는 기준별 고정 상수의 평균이라&#10;&quot;적합도 73&quot; 은 없는 정밀도를 만든다.&#10;기준 하나가 미해소면 결론은&#10;&quot;아직 판정할 수 없음&quot; 이고 73%가 아니다." style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#b85450;fontSize=10;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="855" y="490" width="290" height="180" as="geometry" />
+        </mxCell>
+        <mxCell id="kp" value="남긴 것 — 판정 근거&#10;&#10;기준별 상태와 이유&#10;근거 출처 ID (encounter_id)&#10;판단 검증 7항목 실패 내역&#10;다음 질문&#10;&#10;헤드라인은 세 값,&#10;이유는 펼쳐서 본다.&#10;&quot;판정불가&quot; 가 왜 판정불가인지&#10;답할 수단이 없으면 세 값만&#10;보여주는 것이 더 불친절하다." style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;fontSize=10;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="1170" y="490" width="290" height="180" as="geometry" />
+        </mxCell>
+
+        <mxCell id="se1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#6c8ebf;" edge="1" parent="1" source="s1" target="s2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="se2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#6c8ebf;" edge="1" parent="1" source="s2" target="s3"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="se3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#82b366;" edge="1" parent="1" source="s3" target="s4"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="se4" value="가능 · 판정불가" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#9673a6;fontSize=10;" edge="1" parent="1" source="s4" target="s5"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="se5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#82b366;" edge="1" parent="1" source="s5" target="s6"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="se6" value="불가능 → 근거만" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#b85450;fontSize=10;dashed=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="s4" target="s6"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="770" y="330" /><mxPoint x="1340" y="330" /></Array></mxGeometry></mxCell>
+        <mxCell id="se7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#666666;dashed=1;" edge="1" parent="1" source="s2" target="todo"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="aws" name="3. AWS 배포 현황">
+    <mxGraphModel dx="1500" dy="950" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="ah" value="AWS 배포 현황 · 계정 869515803312 · 2026-08-05 기준" style="text;html=1;align=left;verticalAlign=middle;fontSize=20;fontStyle=1;spacingLeft=4;" vertex="1" parent="1">
+          <mxGeometry x="40" y="20" width="800" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="ahb" value="GraphRAG 계층만 us-west-2 다. 서울 Bedrock KB 가 NEPTUNE_ANALYTICS 스토리지 타입을 아직 받지 않아 생긴 제약이다." style="text;html=1;align=left;verticalAlign=middle;fontSize=12;fontColor=#666666;spacingLeft=4;" vertex="1" parent="1">
+          <mxGeometry x="40" y="55" width="900" height="20" as="geometry" />
+        </mxCell>
+
+        <mxCell id="user" value="브라우저" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="60" y="200" width="90" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="seoul" value="ap-northeast-2 (서울)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#232F3E;dashed=1;verticalAlign=top;fontSize=13;fontStyle=1;align=left;spacingLeft=10;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="190" y="110" width="790" height="700" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cf" value="CloudFront + S3&#10;d2sajombqek5ru.cloudfront.net&#10;&#10;CDK 관리 (HealthcareFrontendStack)&#10;OAC · SPA 403/404 → index.html&#10;&#10;주 배포 경로" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="215" y="150" width="235" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="amp" value="Amplify Hosting&#10;main.d6z9y2cn01rt.amplifyapp.com&#10;&#10;repository: null · autoBranch: false&#10;Git 미연결 · zip 수동 배포&#10;&#10;중복 경로. 정리 대상" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#b85450;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="480" y="150" width="235" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="cognito" value="Cognito User Pool&#10;ap-northeast-2_M9srfkUaM&#10;admin 그룹 · custom:person_id" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="745" y="150" width="215" height="115" as="geometry" />
+        </mxCell>
+
+        <mxCell id="api" value="FastAPI on Lambda + Function URL&#10;healthcare-matching-api · 라우트 35개&#10;&#10;AuthType NONE — AUTH_REQUIRED=true 가 유일한 방어선&#10;CORS 는 FastAPI 한 곳에서만 (Function URL CORS 제거됨 — 헤더 중복 방지)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=11;strokeWidth=2;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="215" y="300" width="745" height="95" as="geometry" />
+        </mxCell>
+
+        <mxCell id="ddb1" value="DynamoDB CriteriaStore&#10;공고 기준 · review_status&#10;pending_review / approved / rejected" style="shape=cylinder3;boundedLbl=1;backgroundOutline=1;html=1;whiteSpace=wrap;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;size=10;" vertex="1" parent="1">
+          <mxGeometry x="215" y="430" width="235" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="ddb2" value="DynamoDB ApplicationStore&#10;스키마 · 지원서 세션 · 3층 캐시&#10;TTL 30일" style="shape=cylinder3;boundedLbl=1;backgroundOutline=1;html=1;whiteSpace=wrap;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;size=10;" vertex="1" parent="1">
+          <mxGeometry x="480" y="430" width="235" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="bed" value="Bedrock Runtime&#10;temperature 0&#10;&#10;스키마 3층 · 값 추출&#10;배치 judge · A2A · 설명" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="745" y="430" width="215" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="gr" value="Bedrock Guardrail&#10;8u7lmyrfbox7 v1&#10;PII 차단 · 의료조언 억제" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="215" y="560" width="235" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="s3lake" value="S3 데이터 레이크 (KMS)&#10;raw/ rag/ trials/" style="shape=cylinder3;boundedLbl=1;backgroundOutline=1;html=1;whiteSpace=wrap;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=10;size=10;" vertex="1" parent="1">
+          <mxGeometry x="480" y="560" width="235" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="sf" value="Step Functions · EventBridge&#10;sanitizer / protocol-parser Lambda&#10;DLQ" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="745" y="560" width="215" height="75" as="geometry" />
+        </mxCell>
+
+        <mxCell id="seed" value="시드 데이터 (SEED_PLACEHOLDER) — 환자 3명 · 방문 9건 · 공고 2건. 실제 임상 데이터가 아니다.&#10;실제 데이터셋은 .gitignore 로 빠져 배포 패키지에 없다. EMR_DATA_DIR 로 교체한다.&#10;&#10;이번 배포에서 시드 결함 2건 수정 — 기준 field 를 FIELD_CATALOG 키로(hba1c·egfr·uacr),&#10;EXCLUSION 을 '위험 없음' 조건으로(egfr &gt;= 45). 수정 전에는 규칙 엔진이 돌지 않고&#10;정상 환자가 차단되었다." style="rounded=0;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=10;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="215" y="660" width="745" height="130" as="geometry" />
+        </mxCell>
+
+        <mxCell id="usw" value="us-west-2" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#9673a6;dashed=1;verticalAlign=top;fontSize=13;fontStyle=1;align=left;spacingLeft=10;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1020" y="110" width="500" height="420" as="geometry" />
+        </mxCell>
+        <mxCell id="neptune" value="Neptune Analytics&#10;g-6wg5ngdvv8 · 16 m-NCU&#10;&#10;상시 과금 — 시간당 $0.581&#10;하루 약 $14 · 월 약 $418&#10;중지 불가. 삭제만 가능&#10;데모 끝나면 반드시 지운다" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;strokeWidth=2;" vertex="1" parent="1">
+          <mxGeometry x="1045" y="150" width="220" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="kb" value="Bedrock Knowledge Base&#10;JEGPQXQUUG&#10;데이터소스 IYNGIUDBRW&#10;전용 KMS + S3&#10;&#10;색인 비어 있음&#10;→ 자유서술 기준은 판정불가" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=10;align=left;spacingLeft=8;verticalAlign=top;spacingTop=6;" vertex="1" parent="1">
+          <mxGeometry x="1290" y="150" width="205" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="cross" value="리전을 넘어가는 것은 비식별화를 마친 문서뿐이다.&#10;직접 식별자는 sanitizer 이전 단계에서 떨어져 나가고 서울 raw/ 에만 남는다.&#10;sanitizer 순서를 바꾸면 리전 분리가 곧 개인정보 국외 이전이 된다.&#10;&#10;연결 3가지 — S3_RAG_BUCKET_NAME · KNOWLEDGE_BASE_REGION&#10;· Step Functions ARN 의 리전 자리" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=10;align=left;spacingLeft=10;verticalAlign=top;spacingTop=8;" vertex="1" parent="1">
+          <mxGeometry x="1045" y="300" width="450" height="130" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#6c8ebf;" edge="1" parent="1" source="user" target="cf"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e2" value="Bearer 토큰" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#d79b00;fontSize=10;" edge="1" parent="1" source="cf" target="api"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#b85450;dashed=1;" edge="1" parent="1" source="api" target="cognito"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;" edge="1" parent="1" source="api" target="ddb1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#d79b00;" edge="1" parent="1" source="api" target="ddb2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#9673a6;" edge="1" parent="1" source="api" target="bed"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e7" value="Retrieve (크로스 리전)" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#9673a6;fontSize=10;dashed=1;" edge="1" parent="1" source="api" target="kb"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1000" y="348" /><mxPoint x="1000" y="130" /><mxPoint x="1392" y="130" /></Array></mxGeometry></mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeWidth=2;strokeColor=#9673a6;" edge="1" parent="1" source="kb" target="neptune"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82b366;" edge="1" parent="1" source="sf" target="s3lake"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;strokeColor=#82b366;dashed=1;" edge="1" parent="1" source="sf" target="ddb1"><mxGeometry relative="1" as="geometry" /></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -458,7 +458,7 @@ function buildRun(personId: number, trialId: string): ScreeningRun {
     blocking_criteria: blocking,
     open_criteria: open,
     review_criteria: [],
-    review_ticket_id: null,
+    human_review_criteria: [],
     mode: 'mock',
     agent: {},
     packet,
@@ -1050,7 +1050,7 @@ export const mockApi = {
         criteria_total: run.criteria_total,
         unresolved_criteria: run.open_criteria,
         human_review_required: run.open_criteria.length > 0,
-        review_ticket_id: null,
+        human_review_criteria: run.open_criteria,
         selection_reason:
           decision === 'OK'
             ? '모든 기준이 근거와 함께 충족되었습니다.'

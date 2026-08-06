@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from typing import Any
 
@@ -224,17 +225,30 @@ class ModelExplanationAgent:
         results: list[CriterionResult],
         run_id: str | None = None,
     ) -> dict[str, dict[str, Any]]:
-        return {
-            "admin": self.explain(
-                outcome=outcome, results=results, audience="admin", run_id=run_id
-            ).to_dict(),
-            "patient": self.explain(
-                outcome=outcome,
-                results=results,
-                audience="patient",
-                run_id=run_id,
-            ).to_dict(),
-        }
+        """관리자·참여자 설명을 동시에 만든다.
+
+        두 호출은 서로의 결과를 쓰지 않는다. 순차로 두면 판정 한 건마다 Bedrock
+        왕복이 두 번 직렬로 쌓여 대기시간에 그대로 얹힌다. 대상별로 병렬 실행한다.
+
+        실패는 각 `explain` 안에서 템플릿 폴백으로 처리되므로 여기서 예외를 다시
+        다룰 필요가 없다. 결과 순서도 의미가 없다(키로 접근한다).
+        """
+        audiences = ("admin", "patient")
+        with ThreadPoolExecutor(
+            max_workers=len(audiences), thread_name_prefix="explanation"
+        ) as executor:
+            explanations = list(
+                executor.map(
+                    lambda audience: self.explain(
+                        outcome=outcome,
+                        results=results,
+                        audience=audience,
+                        run_id=run_id,
+                    ).to_dict(),
+                    audiences,
+                )
+            )
+        return dict(zip(audiences, explanations))
 
 
 class ModelNextBestEvidenceAgent:

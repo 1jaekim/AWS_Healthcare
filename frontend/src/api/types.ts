@@ -237,13 +237,14 @@ export interface ScreeningRun {
   blocking_criteria: string[]
   open_criteria: string[]
   review_criteria: string[]
-  review_ticket_id: string | null
+  /** 사람이 직접 확인해야 하는 기준. 규칙 검토 대상 + A2A 미합의를 합친 것. */
+  human_review_criteria: string[]
   mode: string
   agent: Record<string, unknown>
   /** 기준별 LLM 판단·검증 항목·최종 경로 요약. 판단자가 꺼져 있으면 비어 있다. */
   judgment: JudgmentSummary | Record<string, never>
-  /** A2A 교차 검토 기록. 최대 2라운드. */
-  deliberation: Record<string, unknown>
+  /** A2A 교차 검토 기록. 최대 2라운드. 판정을 바꾸지 않고 판정불가의 종류를 가른다. */
+  deliberation: DeliberationSummary | Record<string, never>
   /** 재판정에서 참여자 답변·지원서 값이 반영된 내역. 일반 실행에서는 null. */
   supplements: SupplementSummary | null
   packet: EvidencePacket
@@ -299,6 +300,18 @@ export interface BaseApplicationSchema {
   json_schema: Record<string, unknown>
 }
 
+/** 공고문 파생 필드(3층) 생성 결과. */
+export interface SchemaAugmentation {
+  status: 'generated' | 'cached' | 'skipped' | 'failed'
+  reason: string | null
+  count: number
+  /** 추가된 필드 이름. json_schema 의 프로퍼티 키와 같다. */
+  fields: string[]
+  dropped: { field: string; reason: string }[]
+  /** 필드명 → 근거가 된 공고문 문구. */
+  evidence: Record<string, string>
+}
+
 export interface ApplicationSchema {
   schema_id: string
   trial_id: string
@@ -308,6 +321,8 @@ export interface ApplicationSchema {
   json_schema: Record<string, unknown>
   mode: string
   created_at: string
+  /** 3층이 돌지 않았으면 null. 그때 스키마는 기본 항목 + 기준 파생 항목뿐이다. */
+  augmentation?: SchemaAugmentation | null
 }
 
 export interface MissingApplicationField {
@@ -343,6 +358,37 @@ export interface ApplicationIntake {
 // 임상시험 추천 (`POST /api/v1/recommendations/run`)
 // ---------------------------------------------------------------------------
 
+/**
+ * A2A 교차 검토 결과 한 건.
+ *
+ * `recommendation` 은 합의(`agreement`)와 그라운딩(`grounded`)이 모두 성립할 때만
+ * OK/NOT_OK 가 된다. 이 값이 규칙 판정을 덮지는 않는다. 판정불가가 **어떤 종류의**
+ * 판정불가인지 구분하는 데 쓴다 — 근거가 없어서인지, 판단이 갈려서인지.
+ */
+export interface DeliberationItem {
+  criterion_id: string
+  recommendation: Decision
+  /** 찬성·반론 두 검토자의 결론이 같았나. */
+  agreement: boolean
+  /** 허용된 근거만 인용했나. false 면 합의해도 신뢰하지 않는다. */
+  grounded: boolean
+  advocate: string
+  skeptic: string
+  source_ids: string[]
+  rationale: string[]
+}
+
+export interface DeliberationSummary {
+  enabled: boolean
+  rounds: number
+  max_rounds: number
+  stopped_reason: string
+  items: DeliberationItem[]
+  input_tokens?: number
+  output_tokens?: number
+  error?: string | null
+}
+
 export interface RecommendationCriterion {
   criterion_id: string
   criterion_type: string
@@ -353,6 +399,8 @@ export interface RecommendationCriterion {
   evidence_ids: string[]
   a2a_applied: boolean
   next_question: string | null
+  /** 이 기준의 A2A 결과. 교차 검토 대상이 아니었으면 없다. */
+  a2a?: DeliberationItem | null
 }
 
 export interface RecommendedTrial {
@@ -372,7 +420,7 @@ export interface RecommendedTrial {
   criteria_total: number
   unresolved_criteria: string[]
   human_review_required: boolean
-  review_ticket_id: string | null
+  human_review_criteria: string[]
   selection_reason: string
   a2a: Record<string, unknown>
   criteria: RecommendationCriterion[]
@@ -454,19 +502,6 @@ export interface AnswerResponse {
   submitted_by: string
   submitted_at: string
   intake: IntakeResult | null
-}
-
-export interface ReviewTicket {
-  ticket_id: string
-  run_id: string
-  person_id: number
-  trial_id: string
-  criterion_ids: string[]
-  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'RERUN_REQUESTED'
-  created_at: string
-  decided_at: string | null
-  decided_by: string | null
-  note: string | null
 }
 
 export interface AuditEvent {
