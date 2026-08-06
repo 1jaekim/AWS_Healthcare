@@ -83,6 +83,8 @@ class ApplicationSupplementBuilder:
         if value is None or (isinstance(value, str) and not value.strip()):
             return "값이 없습니다."
         if spec.get("type") == "array" or isinstance(value, (list, dict)):
+            if field_name == "current_medications":
+                return "복용약 목록은 별도 DUR 관계 판정기가 처리합니다."
             return "목록 값은 단일 기준 관찰값으로 승격하지 않습니다."
         return None
 

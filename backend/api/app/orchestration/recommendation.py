@@ -46,6 +46,7 @@ class RecommendationOrchestrator:
         supplements_by_trial: dict[str, dict[str, Any]] | None = None,
         application_id: str | None = None,
         owner_sub: str | None = None,
+        current_medications: tuple[str, ...] = (),
         interest_areas: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         recommendation_id = self._runs.new_recommendation_id()
@@ -57,6 +58,7 @@ class RecommendationOrchestrator:
             if application_id:
                 kwargs["application_id"] = application_id
                 kwargs["owner_sub"] = owner_sub
+                kwargs["current_medications"] = current_medications
             return self._screening.run(
                 person_id=person_id,
                 trial_id=trial_id,

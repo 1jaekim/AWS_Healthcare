@@ -20,6 +20,7 @@ from ..persistence.run_store import RunStore
 from ..reasoning.aggregator import AggregateOutcome, DeterministicAggregator
 from ..reasoning.bundle import EvidenceBundleBuilder
 from ..reasoning.judgment import JudgmentVerifier
+from ..reasoning.medication_safety import MedicationSafetyEvaluator
 from ..reasoning.rule_aggregator import A2A, CriterionDecision, RuleAggregator
 from ..reasoning.verifier import LocalEvidenceVerifier
 from ..safety.observability import TraceCollector
@@ -75,6 +76,7 @@ class ScreeningOrchestrator:
         deliberator: Any | None = None,
         judge: Any | None = None,
         judgment_verifier: JudgmentVerifier | None = None,
+        medication_safety: MedicationSafetyEvaluator | None = None,
         rule_aggregator: RuleAggregator | None = None,
         mode: str = "deterministic",
     ) -> None:
@@ -84,6 +86,7 @@ class ScreeningOrchestrator:
         # 확정 계층은 판단자 유무와 무관하게 결정론적이다.
         self._judge = judge
         self._judgment_verifier = judgment_verifier or JudgmentVerifier()
+        self._medication_safety = medication_safety or MedicationSafetyEvaluator()
         self._rule_aggregator = rule_aggregator or RuleAggregator()
         self._mode = mode
         self._gateway = gateway
@@ -109,6 +112,7 @@ class ScreeningOrchestrator:
         supplements: dict[str, Observation] | None = None,
         application_id: str | None = None,
         owner_sub: str | None = None,
+        current_medications: tuple[str, ...] = (),
     ) -> ScreeningOutput:
         """스크리닝 한 건을 실행한다.
 
@@ -183,6 +187,22 @@ class ScreeningOrchestrator:
             results = self._resolve_criteria(
                 context, plan, observations, narratives, actor, decisions
             )
+            results, medication_safety = self._medication_safety.apply(
+                rules=rules,
+                results=results,
+                current_medications=current_medications,
+                application_id=application_id,
+            )
+            if medication_safety["applied"]:
+                self._audit.record(
+                    "MEDICATION_SAFETY_APPLIED",
+                    actor=actor,
+                    run_id=run_id,
+                    person_id=person_id,
+                    trial_id=trial_id,
+                    application_id=application_id,
+                    matches=medication_safety["applied"],
+                )
             deliberation = self._deliberate_unknowns(context, results, actor)
 
         outcome = self._aggregator.aggregate(results)
@@ -206,6 +226,7 @@ class ScreeningOrchestrator:
                 "agent": gathering,
                 "deliberation": deliberation,
                 "supplements": applied,
+                "medication_safety": medication_safety,
                 "judgment": self._judgment_summary(decisions),
                 "application_id": application_id,
                 "owner_sub": owner_sub,

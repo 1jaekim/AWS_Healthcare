@@ -286,6 +286,8 @@ class ScreeningRunResponse(BaseModel):
     deliberation: dict[str, Any] = Field(default_factory=dict)
     judgment: dict[str, Any] = Field(default_factory=dict)
     """기준별 LLM 판단·검증 항목·최종 경로 요약. 판단자가 꺼져 있으면 비어 있다."""
+    medication_safety: dict[str, Any] = Field(default_factory=dict)
+    """지원서 복용약과 공고의 명시적 약물 제외조건을 DUR로 대조한 감사 요약."""
     packet: EvidencePacketOut
     requests: list[EvidenceRequestOut]
     explanations: dict[str, ExplanationOut]

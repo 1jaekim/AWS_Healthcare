@@ -1,0 +1,60 @@
+{
+  "metadataAttributes": {
+    "document_type": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "standard_document"
+      },
+      "includeForEmbedding": true
+    },
+    "source_id": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "standard:mfds-dur:coadministration:diabetes-10"
+      },
+      "includeForEmbedding": false
+    },
+    "title": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "식품의약품안전처 DUR 성분정보 당뇨병용제 병용금기 10건"
+      },
+      "includeForEmbedding": true
+    },
+    "schema_version": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "graphrag-drug-standard-v1"
+      },
+      "includeForEmbedding": false
+    },
+    "data_classification": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "public"
+      },
+      "includeForEmbedding": false
+    },
+    "authority": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "MFDS"
+      },
+      "includeForEmbedding": true
+    },
+    "relation_type": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "coadministration_contraindication"
+      },
+      "includeForEmbedding": true
+    },
+    "clinical_topic": {
+      "value": {
+        "type": "STRING",
+        "stringValue": "diabetes"
+      },
+      "includeForEmbedding": true
+    }
+  }
+}

@@ -55,7 +55,7 @@ class PublicReferenceRag:
         }
 
 
-def _schema(application_id: str) -> dict:
+def _schema(application_id: str, *, include_medications: bool = False) -> dict:
     properties = {
         "age": {"type": "integer", "x-criterion-field": "age", "x-unit": "years"},
         "t2d_duration_days": {
@@ -90,6 +90,12 @@ def _schema(application_id: str) -> dict:
             "x-unit": "boolean",
         },
     }
+    if include_medications:
+        properties["current_medications"] = {
+            "type": "array",
+            "items": {"type": "string"},
+            "x-criterion-field": "current_medications",
+        }
     return {
         "schema_id": f"SCHEMA-{application_id}",
         "trial_id": TRIAL_ID,
@@ -101,7 +107,12 @@ def _schema(application_id: str) -> dict:
     }
 
 
-def _application(application_id: str, hba1c) -> dict:
+def _application(
+    application_id: str,
+    hba1c,
+    *,
+    current_medications: list[str] | None = None,
+) -> dict:
     now = datetime.now(UTC).isoformat()
     return {
         "application_id": application_id,
@@ -120,8 +131,37 @@ def _application(application_id: str, hba1c) -> dict:
             "stable_regimen_days": 120,
             "uncontrolled_bp": False,
             "active_pregnancy": False,
+            **(
+                {"current_medications": current_medications}
+                if current_medications is not None
+                else {}
+            ),
         },
     }
+
+
+class MedicationCriteriaSource:
+    """기존 시험에 명시적 병용금기 제외조건 한 건을 더한 테스트 저장소."""
+
+    def __init__(self, rows: list[dict[str, str]]) -> None:
+        self._rows = rows
+
+    def rows_for(self, trial_id: str) -> list[dict[str, str]]:
+        assert trial_id == TRIAL_ID
+        return [
+            *self._rows,
+            {
+                "trial_id": TRIAL_ID,
+                "criterion_id": "T2D-C09",
+                "criterion_type": "EXCLUSION",
+                "field": "current_medications",
+                "operator": "=",
+                "value_low": "false",
+                "value_high": "",
+                "unit": "",
+                "label": "식약처 DUR 병용금기 약물 조합 복용자는 제외",
+            },
+        ]
 
 
 @pytest.mark.parametrize(
@@ -193,3 +233,64 @@ def test_application_json_to_public_rag_to_explained_decision(
         any(source_id.startswith(f"{application_id}:") for source_id in item["source_ids"])
         for item in body["packet"]["items"]
     )
+
+
+def test_application_medications_to_dur_evidence_to_not_ok_reason() -> None:
+    application_id = "APP-E2E-DUR-NOT-OK"
+    rag = PublicReferenceRag()
+    container = build_container(
+        settings.data_dir,
+        graphrag_config=GraphRagSettings(
+            knowledge_base_id="ABCDEFGHIJ",
+            knowledge_base_region="us-east-1",
+        ),
+        retrieval_client=rag,
+    )
+    base_rows = list(container.repository.criteria[TRIAL_ID])
+    container.criteria_tool._criteria_source = MedicationCriteriaSource(base_rows)
+    container.criteria_tool._version_cache.clear()
+    container.intake_store.save_schema(
+        _schema(application_id, include_medications=True)
+    )
+    container.intake_store.save_application(
+        _application(
+            application_id,
+            8.2,
+            current_medications=["메트포르민 500mg", "이오파미돌"],
+        )
+    )
+
+    app.dependency_overrides[get_container] = lambda: container
+    app.dependency_overrides[current_principal] = lambda: Principal(
+        subject=OWNER_SUB,
+        person_id=None,
+    )
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                f"/api/v1/applications/{application_id}/screening",
+                json={"actor": "application-e2e"},
+            )
+    finally:
+        app.dependency_overrides.pop(get_container, None)
+        app.dependency_overrides.pop(current_principal, None)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["screening_decision"] == "NOT_OK"
+    assert body["blocking_criteria"] == ["T2D-C09"]
+    item = next(
+        item for item in body["packet"]["items"] if item["criterion_id"] == "T2D-C09"
+    )
+    assert item["status"] == "CONTRADICTED"
+    assert "급성신부전" in item["explanation"]
+    assert f"{application_id}:current_medications" in item["source_ids"]
+    assert "standard:mfds-dur:coadministration:diabetes-10" in item["source_ids"]
+    assert body["medication_safety"]["policy"] == "explicit_trial_exclusion_only"
+    assert body["medication_safety"]["applied"] == [
+        {
+            "criterion_id": "T2D-C09",
+            "relation_id": "D000267-D000718",
+            "source_id": "standard:mfds-dur:coadministration:diabetes-10",
+        }
+    ]

@@ -31,6 +31,7 @@ from .intake.screening import ApplicationSupplementBuilder
 from .intake.service import RESERVED_FIELDS, InvalidGeneratedSchema
 from .intake.trial_schema import TrialSchemaBuilder
 from .orchestration.runtime import PatientNotFound, TrialNotFound
+from .reasoning.medication_safety import extract_current_medications
 from .reasoning.supplements import SupplementBuilder
 from .repository import DatasetRepository
 from .schemas import (
@@ -547,6 +548,7 @@ def screen_completed_application(
             supplements=supplements.observations,
             application_id=application_id,
             owner_sub=principal.subject,
+            current_medications=extract_current_medications(application),
         )
     except (PatientNotFound, TrialNotFound) as exc:
         raise HTTPException(
@@ -603,6 +605,7 @@ def _run_response(container: Container, output) -> dict:
         "agent": output.run.metadata.get("agent", {}),
         "deliberation": output.run.metadata.get("deliberation", {}),
         "judgment": output.run.metadata.get("judgment", {}),
+        "medication_safety": output.run.metadata.get("medication_safety", {}),
         "packet": output.packet,
         "requests": output.requests,
         "explanations": output.explanations,
@@ -701,6 +704,7 @@ def get_screening(run_id: str, container: Ctx, principal: CurrentUser) -> dict:
         "agent": run.metadata.get("agent", {}),
         "deliberation": run.metadata.get("deliberation", {}),
         "judgment": run.metadata.get("judgment", {}),
+        "medication_safety": run.metadata.get("medication_safety", {}),
         "packet": packet,
         "requests": artifacts.requests,
         "explanations": artifacts.explanations,
@@ -782,6 +786,11 @@ def run_recommendations(
             supplements_by_trial=supplements_by_trial,
             application_id=payload.application_id,
             owner_sub=principal.subject if payload.application_id else None,
+            current_medications=(
+                extract_current_medications(application)
+                if payload.application_id
+                else ()
+            ),
             # 가입 설문의 관심 분야. 동점을 가르는 데만 쓴다. 후보를 걸러내지
             # 않으므로 관심 목록에 없는 적격 공고도 그대로 나온다.
             interest_areas=account_interest_areas(principal.claims),
